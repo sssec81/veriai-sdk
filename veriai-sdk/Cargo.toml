@@ -5,7 +5,7 @@ edition = "2024"
 [features]
 default = ["mock-hardware"]
 mock-hardware = []
-real-hardware = []
+real-hardware = ["dep:aws-nitro-enclaves-nsm-api"]
 test-mode = []
 
 [dependencies]
@@ -16,7 +16,13 @@ ciborium = "0.2"
 coset = "0.3"
 sha2 = "0.10"
 ed25519-dalek = { version = "2.1", features = ["rand_core"] }
-p384 = { version = "0.13", features = ["ecdsa", "sha384"] }
+p384 = { version = "0.13", features = ["ecdsa", "sha384", "pem"] }
+base64ct = { version = "1.6", features = ["alloc"] }
+aws-nitro-enclaves-nsm-api = { version = "0.4.0", optional = true }
+serde_bytes = "0.11"
+
+
+
 
 [dev-dependencies]
 tempfile = "3.10"

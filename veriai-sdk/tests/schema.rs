@@ -45,3 +45,35 @@ fn test_attestation_doc_roundtrip() {
 
     assert_eq!(doc, deserialized);
 }
+
+#[test]
+fn test_mock_get_attestation_document() {
+    use coset::{CoseSign1, CborSerializable};
+
+    let user_data = b"user-data-payload-123";
+    let nonce = b"nonce-value-456";
+    let pubkey = b"enclave-ephemeral-public-key-789";
+
+    let cose_bytes = veriai_sdk::nsm::get_attestation_document(
+        Some(user_data),
+        Some(nonce),
+        Some(pubkey),
+    ).expect("Failed to get mock attestation doc");
+
+    // Decode COSE_Sign1 structure
+    let cose_sign1 = CoseSign1::from_slice(&cose_bytes)
+        .expect("Failed to decode COSE_Sign1");
+
+    // Extract payload
+    let payload = cose_sign1.payload.expect("COSE_Sign1 has no payload");
+
+    // Decode AttestationDoc
+    let doc = AttestationDoc::from_binary(&payload)
+        .expect("Failed to decode AttestationDoc payload");
+
+    assert_eq!(doc.module_id, "Mock-Hypervisor-Module");
+    assert_eq!(doc.user_data, Some(user_data.to_vec()));
+    assert_eq!(doc.nonce, Some(nonce.to_vec()));
+    assert_eq!(doc.public_key, Some(pubkey.to_vec()));
+}
+
