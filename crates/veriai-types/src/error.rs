@@ -56,6 +56,24 @@ pub enum VerifyError {
     #[error("Malformed receipt structure")]
     MalformedReceipt,
 
+    #[error("Receipt payload size exceeds limits")]
+    ReceiptTooLarge,
+
+    #[error("Receipt signature has expired")]
+    ExpiredReceipt,
+
+    #[error("COSE protected header specifies an unsupported signature algorithm")]
+    UnsupportedAlgorithm,
+
+    #[error("COSE protected header is missing or invalid")]
+    InvalidProtectedHeader,
+
+    #[error("Security violation: signature algorithm declared in unprotected header")]
+    AlgorithmInUnprotectedHeader,
+
+    #[error("Timestamp calculation underflow or overflow")]
+    InvalidTimestamp,
+
     #[error("Attestation error: {0}")]
     Attestation(String),
 }

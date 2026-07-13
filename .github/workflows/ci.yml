@@ -38,3 +38,7 @@ jobs:
 
       - name: Run Workspace Tests
         run: cargo test --workspace
+
+      - name: Verify Production Release Compilation
+        run: cargo build --release --no-default-features --features real-hardware
+

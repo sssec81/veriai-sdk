@@ -11,19 +11,47 @@ use veriai_types::{
     AttestationDoc, ReceiptInfo, VeriClaims, VerificationCheck, VerificationResult,
 };
 
+#[derive(Debug, Clone)]
+pub struct VerifierConfig {
+    pub max_receipt_size: usize,
+    pub max_clock_skew: i64,
+    pub max_receipt_age: i64,
+}
+
+impl Default for VerifierConfig {
+    fn default() -> Self {
+        Self {
+            max_receipt_size: 64 * 1024,
+            max_clock_skew: 300,
+            max_receipt_age: 300,
+        }
+    }
+}
+
 /// Stateful Receipt Verifier
 pub struct Verifier {
     provider: Arc<dyn AttestationProvider>,
     trusted_roots: Vec<Vec<u8>>, // DER-encoded root certificates
     state: Option<Mutex<HashMap<[u8; 32], u64>>>, // Maps identity fingerprint to last sequence number
+    config: VerifierConfig,
 }
 
 impl Verifier {
-    /// Create a new Verifier with an attestation provider and trusted root certificates
+    /// Create a new Verifier with default config options
     pub fn new(
         provider: Arc<dyn AttestationProvider>,
         trusted_roots: Vec<Vec<u8>>,
         stateful: bool,
+    ) -> Self {
+        Self::new_with_config(provider, trusted_roots, stateful, VerifierConfig::default())
+    }
+
+    /// Create a new Verifier with custom config options
+    pub fn new_with_config(
+        provider: Arc<dyn AttestationProvider>,
+        trusted_roots: Vec<Vec<u8>>,
+        stateful: bool,
+        config: VerifierConfig,
     ) -> Self {
         Self {
             provider,
@@ -33,6 +61,7 @@ impl Verifier {
             } else {
                 None
             },
+            config,
         }
     }
 
@@ -41,6 +70,16 @@ impl Verifier {
         provider: Arc<dyn AttestationProvider>,
         pem_str: &str,
         stateful: bool,
+    ) -> Result<Self, String> {
+        Self::from_pem_with_config(provider, pem_str, stateful, VerifierConfig::default())
+    }
+
+    /// Load trusted roots from a PEM string with custom configuration
+    pub fn from_pem_with_config(
+        provider: Arc<dyn AttestationProvider>,
+        pem_str: &str,
+        stateful: bool,
+        config: VerifierConfig,
     ) -> Result<Self, String> {
         let mut trusted_roots = Vec::new();
         let mut base64_str = String::new();
@@ -67,7 +106,7 @@ impl Verifier {
             return Err("No certificates found in PEM".to_string());
         }
 
-        Ok(Self::new(provider, trusted_roots, stateful))
+        Ok(Self::new_with_config(provider, trusted_roots, stateful, config))
     }
 
     /// Validates a VeriAI receipt and returns a detailed VerificationResult
@@ -108,9 +147,27 @@ impl Verifier {
             };
         }
 
+        // Check 0: Pre-allocation Receipt Size limit check
+        if receipt_bytes.len() > self.config.max_receipt_size {
+            return Err(VerifyError::ReceiptTooLarge);
+        }
+
         // Check 1: Parse Receipt Structure
         let cose_receipt = match CoseSign1::from_slice(receipt_bytes) {
             Ok(c) => {
+                // Check 0B: Algorithm Agility and Downgrade checks
+                // 1. Verify protected header specifies EdDSA (-8)
+                let protected_alg = c.protected.header.alg.as_ref().ok_or(VerifyError::InvalidProtectedHeader)?;
+                match protected_alg {
+                    coset::Algorithm::Assigned(coset::iana::Algorithm::EdDSA) => {}
+                    _ => {
+                        return Err(VerifyError::UnsupportedAlgorithm);
+                    }
+                }
+                // 2. Reject any algorithm specified in the unprotected header
+                if c.unprotected.alg.is_some() {
+                    return Err(VerifyError::AlgorithmInUnprotectedHeader);
+                }
                 add_check!("Receipt Format", "passed", None);
                 c
             }
@@ -245,38 +302,47 @@ impl Verifier {
 
         let doc_sec = (doc.timestamp / 1000) as i64;
 
-        if (now_sec - doc_sec).abs() > 300 {
+        // 1. Skew check for Attestation Document
+        let skew = now_sec
+            .checked_sub(doc_sec)
+            .ok_or(VerifyError::InvalidTimestamp)?;
+        if skew.abs() > self.config.max_clock_skew {
             add_check!(
                 "Attestation Timestamp Skew",
                 "failed",
-                Some(format!("Skew is {}s", (now_sec - doc_sec).abs()))
+                Some(format!("Skew is {}s", skew.abs()))
             );
             return Ok(fail_result!(VerifyError::TimestampSkewExceeded, checks));
         } else {
             add_check!("Attestation Timestamp Skew", "passed", None);
         }
 
-        if (now_sec - claims.attestation_timestamp).abs() > 300 {
+        // 2. Age check for Receipt (SEC-02B)
+        let receipt_age = now_sec
+            .checked_sub(claims.attestation_timestamp)
+            .ok_or(VerifyError::InvalidTimestamp)?;
+        if receipt_age < 0 || receipt_age > self.config.max_receipt_age {
             add_check!(
                 "Receipt Timestamp Skew",
                 "failed",
-                Some(format!(
-                    "Skew is {}s",
-                    (now_sec - claims.attestation_timestamp).abs()
-                ))
+                Some(format!("Age is {}s", receipt_age))
             );
-            return Ok(fail_result!(VerifyError::TimestampSkewExceeded, checks));
+            return Err(VerifyError::ExpiredReceipt);
         } else {
             add_check!("Receipt Timestamp Skew", "passed", None);
         }
 
-        if (doc_sec - claims.attestation_timestamp).abs() > 5 {
+        // 3. Alignment check between document and receipt
+        let alignment = doc_sec
+            .checked_sub(claims.attestation_timestamp)
+            .ok_or(VerifyError::InvalidTimestamp)?;
+        if alignment.abs() > 5 {
             add_check!(
                 "Timestamp Alignment",
                 "failed",
                 Some(format!(
                     "Mismatch between doc and claims is {}s",
-                    (doc_sec - claims.attestation_timestamp).abs()
+                    alignment.abs()
                 ))
             );
             return Ok(fail_result!(
