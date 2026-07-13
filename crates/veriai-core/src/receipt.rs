@@ -1,9 +1,9 @@
-use ed25519_dalek::{SigningKey, Signer};
+use coset::{CborSerializable, ContentType, CoseSign1Builder, HeaderBuilder, iana};
+use ed25519_dalek::{Signer, SigningKey};
 use sha2::{Digest, Sha512};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
-use coset::{CoseSign1Builder, HeaderBuilder, iana, CborSerializable, ContentType};
 use veriai_attestation::AttestationProvider;
 use veriai_types::VeriClaims;
 use veriai_types::error::VerifyError;
@@ -65,11 +65,11 @@ impl ReceiptGenerator {
         let report_data = self.compute_report_data();
 
         // 1. Get signed attestation document from the NSM binding it to our key
-        let attestation_report = self.provider.generate(
-            Some(&report_data),
-            Some(&client_nonce),
-            Some(&pubkey_bytes),
-        ).await.map_err(|e| VerifyError::Attestation(e.to_string()))?;
+        let attestation_report = self
+            .provider
+            .generate(Some(&report_data), Some(&client_nonce), Some(&pubkey_bytes))
+            .await
+            .map_err(|e| VerifyError::Attestation(e.to_string()))?;
 
         let now_sec = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -90,7 +90,8 @@ impl ReceiptGenerator {
             enclave_pubkey: pubkey_bytes,
         };
 
-        let payload = claims.to_binary()
+        let payload = claims
+            .to_binary()
             .map_err(|_| VerifyError::MalformedReceipt)?;
 
         // 3. Wrap in COSE_Sign1
@@ -103,14 +104,16 @@ impl ReceiptGenerator {
             .payload(payload)
             .build();
 
-        cose_sign1.unprotected.content_type = Some(ContentType::Text("application/cwt".to_string()));
+        cose_sign1.unprotected.content_type =
+            Some(ContentType::Text("application/cwt".to_string()));
 
         // 4. Sign with the ephemeral Ed25519 key
         let tbs = cose_sign1.tbs_data(&[]);
         let signature = self.signing_key.sign(&tbs);
         cose_sign1.signature = signature.to_bytes().to_vec();
 
-        cose_sign1.to_vec()
+        cose_sign1
+            .to_vec()
             .map_err(|_| VerifyError::MalformedReceipt)
     }
 }

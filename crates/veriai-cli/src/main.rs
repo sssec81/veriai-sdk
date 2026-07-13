@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use coset::{CborSerializable, CoseSign1};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs::{self, File};
@@ -10,7 +11,6 @@ use veriai_core::hashing::compute_model_hash;
 use veriai_core::receipt::ReceiptGenerator;
 use veriai_core::verify::Verifier;
 use veriai_types::VeriClaims;
-use coset::{CoseSign1, CborSerializable};
 
 #[derive(Parser)]
 #[command(name = "veriai")]
@@ -121,9 +121,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         Commands::Inspect { receipt } => {
             let receipt_bytes = fs::read(receipt)?;
-            let cose_receipt = CoseSign1::from_slice(&receipt_bytes).map_err(|e| format!("Cose parse error: {:?}", e))?;
+            let cose_receipt = CoseSign1::from_slice(&receipt_bytes)
+                .map_err(|e| format!("Cose parse error: {:?}", e))?;
             let payload = cose_receipt.payload.ok_or("Receipt contains no payload")?;
-            let claims = VeriClaims::from_binary(&payload).map_err(|e| format!("Claims parse error: {:?}", e))?;
+            let claims = VeriClaims::from_binary(&payload)
+                .map_err(|e| format!("Claims parse error: {:?}", e))?;
 
             println!("VeriAI Receipt Inspection");
             println!("-------------------------");
@@ -165,15 +167,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
 
             let generator = ReceiptGenerator::new(provider.clone());
-            let receipt = generator.generate_receipt(
-                model_hash,
-                input_hash,
-                output_hash,
-                nonce_bytes,
-            ).await?;
+            let receipt = generator
+                .generate_receipt(model_hash, input_hash, output_hash, nonce_bytes)
+                .await?;
 
             fs::write(&receipt_out, receipt)?;
-            println!("Receipt generated successfully and saved to {:?}", receipt_out);
+            println!(
+                "Receipt generated successfully and saved to {:?}",
+                receipt_out
+            );
         }
         Commands::Verify {
             receipt,
@@ -224,17 +226,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("\nVeriAI Receipt Verification");
             println!("---------------------------");
 
-            let result = verifier.verify(
-                &receipt_bytes,
-                model_hash,
-                input_hash,
-                output_hash,
-                nonce_bytes,
-                &pcr0_bytes,
-            ).await?;
+            let result = verifier
+                .verify(
+                    &receipt_bytes,
+                    model_hash,
+                    input_hash,
+                    output_hash,
+                    nonce_bytes,
+                    &pcr0_bytes,
+                )
+                .await?;
 
             for check in &result.checks {
-                let status_symbol = if check.status == "passed" { "✓" } else { "✗" };
+                let status_symbol = if check.status == "passed" {
+                    "✓"
+                } else {
+                    "✗"
+                };
                 if let Some(ref details) = check.details {
                     println!("{} {} ({})", status_symbol, check.name, details);
                 } else {
@@ -242,7 +250,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
-            println!("\nResult: {}", if result.valid { "VERIFIED" } else { "FAILED" });
+            println!(
+                "\nResult: {}",
+                if result.valid { "VERIFIED" } else { "FAILED" }
+            );
 
             if !result.valid {
                 if let Some(err) = result.error {

@@ -1,6 +1,6 @@
 use axum::{
-    routing::{get, post},
     Json, Router,
+    routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
@@ -92,51 +92,60 @@ async fn verify_handler(
         bytes
     } else {
         use base64ct::{Base64, Encoding};
-        Base64::decode_vec(&payload.receipt)
-            .map_err(|e| {
-                tracing::warn!("Failed to decode receipt: {:?}", e);
-                (
-                    axum::http::StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse {
-                        error: format!("Invalid receipt encoding (must be hex or base64): {:?}", e),
-                    }),
-                )
-            })?
+        Base64::decode_vec(&payload.receipt).map_err(|e| {
+            tracing::warn!("Failed to decode receipt: {:?}", e);
+            (
+                axum::http::StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("Invalid receipt encoding (must be hex or base64): {:?}", e),
+                }),
+            )
+        })?
     };
 
     // Decode parameter hexes
     let model_hash = decode_hex_32(&payload.model_hash).map_err(|e| {
         (
             axum::http::StatusCode::BAD_REQUEST,
-            Json(ErrorResponse { error: format!("Invalid model_hash: {}", e) }),
+            Json(ErrorResponse {
+                error: format!("Invalid model_hash: {}", e),
+            }),
         )
     })?;
 
     let input_hash = decode_hex_32(&payload.input_hash).map_err(|e| {
         (
             axum::http::StatusCode::BAD_REQUEST,
-            Json(ErrorResponse { error: format!("Invalid input_hash: {}", e) }),
+            Json(ErrorResponse {
+                error: format!("Invalid input_hash: {}", e),
+            }),
         )
     })?;
 
     let output_hash = decode_hex_32(&payload.output_hash).map_err(|e| {
         (
             axum::http::StatusCode::BAD_REQUEST,
-            Json(ErrorResponse { error: format!("Invalid output_hash: {}", e) }),
+            Json(ErrorResponse {
+                error: format!("Invalid output_hash: {}", e),
+            }),
         )
     })?;
 
     let nonce = decode_hex_32(&payload.nonce).map_err(|e| {
         (
             axum::http::StatusCode::BAD_REQUEST,
-            Json(ErrorResponse { error: format!("Invalid nonce: {}", e) }),
+            Json(ErrorResponse {
+                error: format!("Invalid nonce: {}", e),
+            }),
         )
     })?;
 
     let expected_pcr0 = hex::decode(&payload.expected_pcr0).map_err(|e| {
         (
             axum::http::StatusCode::BAD_REQUEST,
-            Json(ErrorResponse { error: format!("Invalid expected_pcr0 hex: {:?}", e) }),
+            Json(ErrorResponse {
+                error: format!("Invalid expected_pcr0 hex: {:?}", e),
+            }),
         )
     })?;
 
@@ -147,24 +156,34 @@ async fn verify_handler(
         tracing::warn!("Invalid root certificate PEM: {}", e);
         (
             axum::http::StatusCode::BAD_REQUEST,
-            Json(ErrorResponse { error: format!("Invalid root_cert: {}", e) }),
+            Json(ErrorResponse {
+                error: format!("Invalid root_cert: {}", e),
+            }),
         )
     })?;
 
-    let result = verifier.verify(
-        &receipt_bytes,
-        model_hash,
-        input_hash,
-        output_hash,
-        nonce,
-        &expected_pcr0,
-    ).await.map_err(|e| {
-        tracing::error!("Cryptographic infrastructure error during verification: {:?}", e);
-        (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse { error: format!("Infrastructure error: {:?}", e) }),
+    let result = verifier
+        .verify(
+            &receipt_bytes,
+            model_hash,
+            input_hash,
+            output_hash,
+            nonce,
+            &expected_pcr0,
         )
-    })?;
+        .await
+        .map_err(|e| {
+            tracing::error!(
+                "Cryptographic infrastructure error during verification: {:?}",
+                e
+            );
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Infrastructure error: {:?}", e),
+                }),
+            )
+        })?;
 
     tracing::info!("Verification completed. Valid: {}", result.valid);
     Ok(Json(result))

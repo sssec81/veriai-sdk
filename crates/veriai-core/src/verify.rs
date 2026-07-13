@@ -1,13 +1,15 @@
 use base64ct::Encoding;
-use coset::{CoseSign1, CborSerializable};
-use ed25519_dalek::{VerifyingKey, Verifier as EdVerifier};
+use coset::{CborSerializable, CoseSign1};
+use ed25519_dalek::{Verifier as EdVerifier, VerifyingKey};
 use sha2::{Digest, Sha256, Sha512};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use veriai_attestation::AttestationProvider;
-use veriai_types::{AttestationDoc, VeriClaims, VerificationCheck, VerificationResult, ReceiptInfo};
 use veriai_types::error::VerifyError;
+use veriai_types::{
+    AttestationDoc, ReceiptInfo, VeriClaims, VerificationCheck, VerificationResult,
+};
 
 /// Stateful Receipt Verifier
 pub struct Verifier {
@@ -18,16 +20,28 @@ pub struct Verifier {
 
 impl Verifier {
     /// Create a new Verifier with an attestation provider and trusted root certificates
-    pub fn new(provider: Arc<dyn AttestationProvider>, trusted_roots: Vec<Vec<u8>>, stateful: bool) -> Self {
+    pub fn new(
+        provider: Arc<dyn AttestationProvider>,
+        trusted_roots: Vec<Vec<u8>>,
+        stateful: bool,
+    ) -> Self {
         Self {
             provider,
             trusted_roots,
-            state: if stateful { Some(Mutex::new(HashMap::new())) } else { None },
+            state: if stateful {
+                Some(Mutex::new(HashMap::new()))
+            } else {
+                None
+            },
         }
     }
 
     /// Load trusted roots from a PEM string containing one or more certificates
-    pub fn from_pem(provider: Arc<dyn AttestationProvider>, pem_str: &str, stateful: bool) -> Result<Self, String> {
+    pub fn from_pem(
+        provider: Arc<dyn AttestationProvider>,
+        pem_str: &str,
+        stateful: bool,
+    ) -> Result<Self, String> {
         let mut trusted_roots = Vec::new();
         let mut base64_str = String::new();
         let mut in_cert = false;
@@ -109,7 +123,11 @@ impl Verifier {
         let payload = match cose_receipt.payload.as_ref() {
             Some(p) => p,
             None => {
-                add_check!("Receipt Payload", "failed", Some("Missing payload".to_string()));
+                add_check!(
+                    "Receipt Payload",
+                    "failed",
+                    Some("Missing payload".to_string())
+                );
                 return Ok(fail_result!(VerifyError::MalformedReceipt, checks));
             }
         };
@@ -150,7 +168,11 @@ impl Verifier {
         if receipt_sig_verified {
             add_check!("Receipt Signature", "passed", None);
         } else {
-            add_check!("Receipt Signature", "failed", Some("Ed25519 validation failed".to_string()));
+            add_check!(
+                "Receipt Signature",
+                "failed",
+                Some("Ed25519 validation failed".to_string())
+            );
             return Ok(fail_result!(VerifyError::InvalidCoseSignature, checks));
         }
 
@@ -159,15 +181,25 @@ impl Verifier {
             Ok(c) => c,
             Err(e) => {
                 add_check!("Attestation Format", "failed", Some(e.to_string()));
-                return Ok(fail_result!(VerifyError::InvalidAttestationDocument(e.to_string()), checks));
+                return Ok(fail_result!(
+                    VerifyError::InvalidAttestationDocument(e.to_string()),
+                    checks
+                ));
             }
         };
 
         let attestation_payload = match attestation_cose.payload.as_ref() {
             Some(p) => p,
             None => {
-                add_check!("Attestation Payload", "failed", Some("Missing payload".to_string()));
-                return Ok(fail_result!(VerifyError::InvalidAttestationDocument("Missing payload".to_string()), checks));
+                add_check!(
+                    "Attestation Payload",
+                    "failed",
+                    Some("Missing payload".to_string())
+                );
+                return Ok(fail_result!(
+                    VerifyError::InvalidAttestationDocument("Missing payload".to_string()),
+                    checks
+                ));
             }
         };
 
@@ -175,7 +207,10 @@ impl Verifier {
             Ok(d) => d,
             Err(e) => {
                 add_check!("Attestation Doc Parsing", "failed", Some(e.to_string()));
-                return Ok(fail_result!(VerifyError::InvalidAttestationDocument(e.to_string()), checks));
+                return Ok(fail_result!(
+                    VerifyError::InvalidAttestationDocument(e.to_string()),
+                    checks
+                ));
             }
         };
 
@@ -191,8 +226,15 @@ impl Verifier {
         if verified_chain {
             add_check!("Attestation Signature & Chain", "passed", None);
         } else {
-            add_check!("Attestation Signature & Chain", "failed", Some("Signature or chain verification failed".to_string()));
-            return Ok(fail_result!(VerifyError::InvalidAttestationDocument("Verification failed".to_string()), checks));
+            add_check!(
+                "Attestation Signature & Chain",
+                "failed",
+                Some("Signature or chain verification failed".to_string())
+            );
+            return Ok(fail_result!(
+                VerifyError::InvalidAttestationDocument("Verification failed".to_string()),
+                checks
+            ));
         }
 
         // Verify timestamps
@@ -204,22 +246,43 @@ impl Verifier {
         let doc_sec = (doc.timestamp / 1000) as i64;
 
         if (now_sec - doc_sec).abs() > 300 {
-            add_check!("Attestation Timestamp Skew", "failed", Some(format!("Skew is {}s", (now_sec - doc_sec).abs())));
+            add_check!(
+                "Attestation Timestamp Skew",
+                "failed",
+                Some(format!("Skew is {}s", (now_sec - doc_sec).abs()))
+            );
             return Ok(fail_result!(VerifyError::TimestampSkewExceeded, checks));
         } else {
             add_check!("Attestation Timestamp Skew", "passed", None);
         }
 
         if (now_sec - claims.attestation_timestamp).abs() > 300 {
-            add_check!("Receipt Timestamp Skew", "failed", Some(format!("Skew is {}s", (now_sec - claims.attestation_timestamp).abs())));
+            add_check!(
+                "Receipt Timestamp Skew",
+                "failed",
+                Some(format!(
+                    "Skew is {}s",
+                    (now_sec - claims.attestation_timestamp).abs()
+                ))
+            );
             return Ok(fail_result!(VerifyError::TimestampSkewExceeded, checks));
         } else {
             add_check!("Receipt Timestamp Skew", "passed", None);
         }
 
         if (doc_sec - claims.attestation_timestamp).abs() > 5 {
-            add_check!("Timestamp Alignment", "failed", Some(format!("Mismatch between doc and claims is {}s", (doc_sec - claims.attestation_timestamp).abs())));
-            return Ok(fail_result!(VerifyError::AttestationDocTimestampMismatch, checks));
+            add_check!(
+                "Timestamp Alignment",
+                "failed",
+                Some(format!(
+                    "Mismatch between doc and claims is {}s",
+                    (doc_sec - claims.attestation_timestamp).abs()
+                ))
+            );
+            return Ok(fail_result!(
+                VerifyError::AttestationDocTimestampMismatch,
+                checks
+            ));
         } else {
             add_check!("Timestamp Alignment", "passed", None);
         }
@@ -228,7 +291,11 @@ impl Verifier {
         let doc_pcr0 = match doc.pcrs.get(&0) {
             Some(p) => p,
             None => {
-                add_check!("PCR0 Check", "failed", Some("PCR0 missing in document".to_string()));
+                add_check!(
+                    "PCR0 Check",
+                    "failed",
+                    Some("PCR0 missing in document".to_string())
+                );
                 return Ok(fail_result!(VerifyError::PcrMismatch, checks));
             }
         };
@@ -236,7 +303,15 @@ impl Verifier {
         if doc_pcr0 == expected_pcr0 {
             add_check!("PCR0 Check", "passed", None);
         } else {
-            add_check!("PCR0 Check", "failed", Some(format!("Expected: {}, Got: {}", hex::encode(expected_pcr0), hex::encode(doc_pcr0))));
+            add_check!(
+                "PCR0 Check",
+                "failed",
+                Some(format!(
+                    "Expected: {}, Got: {}",
+                    hex::encode(expected_pcr0),
+                    hex::encode(doc_pcr0)
+                ))
+            );
             return Ok(fail_result!(VerifyError::PcrMismatch, checks));
         }
 
@@ -244,7 +319,11 @@ impl Verifier {
         let doc_pubkey = match doc.public_key.as_ref() {
             Some(k) => k,
             None => {
-                add_check!("Pubkey Binding", "failed", Some("Public key missing in document".to_string()));
+                add_check!(
+                    "Pubkey Binding",
+                    "failed",
+                    Some("Public key missing in document".to_string())
+                );
                 return Ok(fail_result!(VerifyError::PubkeyBindingMismatch, checks));
             }
         };
@@ -252,7 +331,11 @@ impl Verifier {
         if doc_pubkey == &claims.enclave_pubkey {
             add_check!("Pubkey Binding", "passed", None);
         } else {
-            add_check!("Pubkey Binding", "failed", Some("Public key mismatch".to_string()));
+            add_check!(
+                "Pubkey Binding",
+                "failed",
+                Some("Public key mismatch".to_string())
+            );
             return Ok(fail_result!(VerifyError::PubkeyBindingMismatch, checks));
         }
 
@@ -260,7 +343,11 @@ impl Verifier {
         let doc_user_data = match doc.user_data.as_ref() {
             Some(d) => d,
             None => {
-                add_check!("REPORTDATA Binding", "failed", Some("User data missing in document".to_string()));
+                add_check!(
+                    "REPORTDATA Binding",
+                    "failed",
+                    Some("User data missing in document".to_string())
+                );
                 return Ok(fail_result!(VerifyError::ReportDataMismatch, checks));
             }
         };
@@ -274,7 +361,11 @@ impl Verifier {
         if doc_user_data == &expected_report_data {
             add_check!("REPORTDATA Binding", "passed", None);
         } else {
-            add_check!("REPORTDATA Binding", "failed", Some("REPORTDATA hash mismatch".to_string()));
+            add_check!(
+                "REPORTDATA Binding",
+                "failed",
+                Some("REPORTDATA hash mismatch".to_string())
+            );
             return Ok(fail_result!(VerifyError::ReportDataMismatch, checks));
         }
 
@@ -282,28 +373,44 @@ impl Verifier {
         if doc.nonce.as_deref() == Some(&expected_nonce) && claims.client_nonce == expected_nonce {
             add_check!("Nonce Matching", "passed", None);
         } else {
-            add_check!("Nonce Matching", "failed", Some("Nonce mismatch".to_string()));
+            add_check!(
+                "Nonce Matching",
+                "failed",
+                Some("Nonce mismatch".to_string())
+            );
             return Ok(fail_result!(VerifyError::NonceMismatch, checks));
         }
 
         if claims.model_hash == expected_model_hash {
             add_check!("Model Hash", "passed", None);
         } else {
-            add_check!("Model Hash", "failed", Some("Model Merkle root mismatch".to_string()));
+            add_check!(
+                "Model Hash",
+                "failed",
+                Some("Model Merkle root mismatch".to_string())
+            );
             return Ok(fail_result!(VerifyError::ModelHashMismatch, checks));
         }
 
         if claims.input_hash == expected_input_hash {
             add_check!("Input Hash", "passed", None);
         } else {
-            add_check!("Input Hash", "failed", Some("Input hash mismatch".to_string()));
+            add_check!(
+                "Input Hash",
+                "failed",
+                Some("Input hash mismatch".to_string())
+            );
             return Ok(fail_result!(VerifyError::InputHashMismatch, checks));
         }
 
         if claims.output_hash == expected_output_hash {
             add_check!("Output Hash", "passed", None);
         } else {
-            add_check!("Output Hash", "failed", Some("Output hash mismatch".to_string()));
+            add_check!(
+                "Output Hash",
+                "failed",
+                Some("Output hash mismatch".to_string())
+            );
             return Ok(fail_result!(VerifyError::OutputHashMismatch, checks));
         }
 
@@ -311,10 +418,17 @@ impl Verifier {
         if let Some(ref state_mutex) = self.state {
             let mut state = state_mutex.lock().unwrap();
             let identity_fingerprint = compute_identity_fingerprint(&doc);
-            
+
             if let Some(&last_seq) = state.get(&identity_fingerprint) {
                 if claims.sequence_num <= last_seq {
-                    add_check!("Sequence Check", "failed", Some(format!("Sequence {} is out of order (last was {})", claims.sequence_num, last_seq)));
+                    add_check!(
+                        "Sequence Check",
+                        "failed",
+                        Some(format!(
+                            "Sequence {} is out of order (last was {})",
+                            claims.sequence_num, last_seq
+                        ))
+                    );
                     return Ok(fail_result!(VerifyError::SequenceNumberOutOfOrder, checks));
                 }
             }

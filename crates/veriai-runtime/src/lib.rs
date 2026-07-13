@@ -1,10 +1,10 @@
 pub mod error;
-pub mod mock;
 pub mod llama_cpp;
+pub mod mock;
 
+use crate::error::RuntimeError;
 use async_trait::async_trait;
 use veriai_types::openai::{InferenceRequest, InferenceResult, RuntimeMetadata};
-use crate::error::RuntimeError;
 
 #[async_trait]
 pub trait InferenceRuntime: Send + Sync {

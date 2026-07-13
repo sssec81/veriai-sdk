@@ -1,8 +1,8 @@
-use veriai_core::hashing::compute_model_hash;
+use sha2::Digest;
 use std::fs::File;
 use std::io::Write;
 use tempfile::tempdir;
-use sha2::Digest;
+use veriai_core::hashing::compute_model_hash;
 
 #[test]
 fn test_empty_file_hash() {

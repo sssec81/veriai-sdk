@@ -1,8 +1,8 @@
 use crate::AttestationProvider;
 use async_trait::async_trait;
 use base64ct::{Base64, Encoding};
-use coset::{CoseSign1, CoseSign1Builder, HeaderBuilder, iana, CborSerializable};
-use p384::ecdsa::{SigningKey, signature::Signer, VerifyingKey, signature::Verifier};
+use coset::{CborSerializable, CoseSign1, CoseSign1Builder, HeaderBuilder, iana};
+use p384::ecdsa::{SigningKey, VerifyingKey, signature::Signer, signature::Verifier};
 use p384::pkcs8::DecodePrivateKey;
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -13,7 +13,8 @@ use x509_cert::der::{Decode, Encode};
 
 // Embed mock certificates and private signing keys at compile time
 const MOCK_ROOT_PEM: &str = include_str!("../../../tests/fixtures/mock-aws-root.pem");
-const MOCK_INTERMEDIATE_PEM: &str = include_str!("../../../tests/fixtures/mock-aws-intermediate.pem");
+const MOCK_INTERMEDIATE_PEM: &str =
+    include_str!("../../../tests/fixtures/mock-aws-intermediate.pem");
 const MOCK_LEAF_PEM: &str = include_str!("../../../tests/fixtures/mock-aws-leaf.pem");
 const MOCK_LEAF_KEY_PEM: &str = include_str!("../../../tests/fixtures/mock-aws-leaf.key.pem");
 
@@ -70,7 +71,8 @@ impl AttestationProvider for MockAttestationProvider {
             nonce: nonce.map(|n| n.to_vec()),
         };
 
-        let payload = doc.to_binary()
+        let payload = doc
+            .to_binary()
             .map_err(|e| AttestationError::ValidationError(e.to_string()))?;
 
         // Build the COSE_Sign1 structure
@@ -84,65 +86,114 @@ impl AttestationProvider for MockAttestationProvider {
             .build();
 
         // Sign the payload
-        let signing_key = SigningKey::from_pkcs8_pem(MOCK_LEAF_KEY_PEM)
-            .map_err(|e| AttestationError::ValidationError(format!("Failed to parse signing key: {}", e)))?;
+        let signing_key = SigningKey::from_pkcs8_pem(MOCK_LEAF_KEY_PEM).map_err(|e| {
+            AttestationError::ValidationError(format!("Failed to parse signing key: {}", e))
+        })?;
 
         let tbs = cose_sign1.tbs_data(&[]);
         let signature: p384::ecdsa::Signature = signing_key.sign(&tbs);
         cose_sign1.signature = signature.to_bytes().to_vec();
 
-        cose_sign1.to_vec()
-            .map_err(|e| AttestationError::ValidationError(format!("Failed to serialize COSE_Sign1: {}", e)))
+        cose_sign1.to_vec().map_err(|e| {
+            AttestationError::ValidationError(format!("Failed to serialize COSE_Sign1: {}", e))
+        })
     }
 
-    async fn verify(&self, doc_bytes: &[u8], expected_root: &[u8]) -> Result<bool, AttestationError> {
+    async fn verify(
+        &self,
+        doc_bytes: &[u8],
+        expected_root: &[u8],
+    ) -> Result<bool, AttestationError> {
         let attestation_cose = CoseSign1::from_slice(doc_bytes)
             .map_err(|e| AttestationError::InvalidAttestationDocument(e.to_string()))?;
 
-        let attestation_payload = attestation_cose.payload.as_ref()
-            .ok_or_else(|| AttestationError::InvalidAttestationDocument("Missing payload".to_string()))?;
+        let attestation_payload = attestation_cose.payload.as_ref().ok_or_else(|| {
+            AttestationError::InvalidAttestationDocument("Missing payload".to_string())
+        })?;
 
         let doc = AttestationDoc::from_binary(attestation_payload)
             .map_err(|e| AttestationError::InvalidAttestationDocument(e.to_string()))?;
 
         // Verify attestation signature
-        let leaf_cert = Certificate::from_der(&doc.certificate)
-            .map_err(|e| AttestationError::InvalidAttestationDocument(format!("Failed to parse leaf certificate: {}", e)))?;
+        let leaf_cert = Certificate::from_der(&doc.certificate).map_err(|e| {
+            AttestationError::InvalidAttestationDocument(format!(
+                "Failed to parse leaf certificate: {}",
+                e
+            ))
+        })?;
 
-        let raw_leaf_pubkey = leaf_cert.tbs_certificate.subject_public_key_info.subject_public_key.raw_bytes();
-        let leaf_verifying_key = VerifyingKey::from_sec1_bytes(raw_leaf_pubkey)
-            .map_err(|e| AttestationError::InvalidAttestationDocument(format!("Invalid public key: {}", e)))?;
+        let raw_leaf_pubkey = leaf_cert
+            .tbs_certificate
+            .subject_public_key_info
+            .subject_public_key
+            .raw_bytes();
+        let leaf_verifying_key = VerifyingKey::from_sec1_bytes(raw_leaf_pubkey).map_err(|e| {
+            AttestationError::InvalidAttestationDocument(format!("Invalid public key: {}", e))
+        })?;
 
         let attestation_signature = p384::ecdsa::Signature::from_slice(&attestation_cose.signature)
-            .map_err(|e| AttestationError::InvalidAttestationDocument(format!("Invalid signature bytes: {}", e)))?;
+            .map_err(|e| {
+                AttestationError::InvalidAttestationDocument(format!(
+                    "Invalid signature bytes: {}",
+                    e
+                ))
+            })?;
 
         let attestation_tbs = attestation_cose.tbs_data(&[]);
-        leaf_verifying_key.verify(&attestation_tbs, &attestation_signature)
-            .map_err(|e| AttestationError::InvalidAttestationDocument(format!("Signature validation failed: {}", e)))?;
+        leaf_verifying_key
+            .verify(&attestation_tbs, &attestation_signature)
+            .map_err(|e| {
+                AttestationError::InvalidAttestationDocument(format!(
+                    "Signature validation failed: {}",
+                    e
+                ))
+            })?;
 
         // Verify Certificate Chain
         let mut current_cert = leaf_cert;
         let mut verified = false;
 
         for cert_der in &doc.cabundle {
-            let parent_cert = Certificate::from_der(cert_der)
-                .map_err(|e| AttestationError::InvalidAttestationDocument(format!("Invalid parent cert: {}", e)))?;
+            let parent_cert = Certificate::from_der(cert_der).map_err(|e| {
+                AttestationError::InvalidAttestationDocument(format!("Invalid parent cert: {}", e))
+            })?;
 
-            let parent_pubkey_raw = parent_cert.tbs_certificate.subject_public_key_info.subject_public_key.raw_bytes();
-            let parent_verifying_key = VerifyingKey::from_sec1_bytes(parent_pubkey_raw)
-                .map_err(|e| AttestationError::InvalidAttestationDocument(format!("Invalid parent public key: {}", e)))?;
+            let parent_pubkey_raw = parent_cert
+                .tbs_certificate
+                .subject_public_key_info
+                .subject_public_key
+                .raw_bytes();
+            let parent_verifying_key =
+                VerifyingKey::from_sec1_bytes(parent_pubkey_raw).map_err(|e| {
+                    AttestationError::InvalidAttestationDocument(format!(
+                        "Invalid parent public key: {}",
+                        e
+                    ))
+                })?;
 
-            let current_tbs = current_cert.tbs_certificate.to_der()
-                .map_err(|e| AttestationError::InvalidAttestationDocument(format!("Failed to encode TBS: {}", e)))?;
+            let current_tbs = current_cert.tbs_certificate.to_der().map_err(|e| {
+                AttestationError::InvalidAttestationDocument(format!("Failed to encode TBS: {}", e))
+            })?;
 
             let current_sig_bytes = current_cert.signature.raw_bytes();
-            let current_sig = p384::ecdsa::Signature::from_der(current_sig_bytes)
-                .map_err(|e| AttestationError::InvalidAttestationDocument(format!("Invalid signature DER: {}", e)))?;
+            let current_sig = p384::ecdsa::Signature::from_der(current_sig_bytes).map_err(|e| {
+                AttestationError::InvalidAttestationDocument(format!(
+                    "Invalid signature DER: {}",
+                    e
+                ))
+            })?;
 
-            parent_verifying_key.verify(&current_tbs, &current_sig)
-                .map_err(|e| AttestationError::InvalidAttestationDocument(format!("Chain signature validation failed: {}", e)))?;
+            parent_verifying_key
+                .verify(&current_tbs, &current_sig)
+                .map_err(|e| {
+                    AttestationError::InvalidAttestationDocument(format!(
+                        "Chain signature validation failed: {}",
+                        e
+                    ))
+                })?;
 
-            let parent_der = parent_cert.to_der()
+            let parent_der = parent_cert
+                .to_der()
                 .map_err(|e| AttestationError::InvalidAttestationDocument(e.to_string()))?;
 
             if parent_der == expected_root {
@@ -154,7 +205,8 @@ impl AttestationProvider for MockAttestationProvider {
         }
 
         if !verified {
-            let current_der = current_cert.to_der()
+            let current_der = current_cert
+                .to_der()
                 .map_err(|e| AttestationError::InvalidAttestationDocument(e.to_string()))?;
             if current_der == expected_root {
                 verified = true;

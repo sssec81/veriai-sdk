@@ -16,7 +16,9 @@ impl LlamaCppRuntime {
 #[async_trait]
 impl InferenceRuntime for LlamaCppRuntime {
     async fn generate(&self, _request: InferenceRequest) -> Result<InferenceResult, RuntimeError> {
-        Err(RuntimeError::NotImplemented("llama.cpp adapter is not configured in this build".to_string()))
+        Err(RuntimeError::NotImplemented(
+            "llama.cpp adapter is not configured in this build".to_string(),
+        ))
     }
 
     fn metadata(&self) -> RuntimeMetadata {

@@ -1,10 +1,10 @@
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, Read};
 use std::path::Path;
 use std::time::SystemTime;
-use std::collections::HashMap;
-use serde::{Serialize, Deserialize};
 
 const CHUNK_SIZE: usize = 4 * 1024 * 1024; // 4MB
 
@@ -23,7 +23,8 @@ pub fn compute_model_hash<P: AsRef<Path>>(path: P) -> io::Result<[u8; 32]> {
     let metadata = std::fs::metadata(path)?;
     let file_size = metadata.len();
     let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-    let duration = modified.duration_since(SystemTime::UNIX_EPOCH)
+    let duration = modified
+        .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap_or_default();
     let mtime_secs = duration.as_secs();
     let mtime_nanos = duration.subsec_nanos();
@@ -31,13 +32,13 @@ pub fn compute_model_hash<P: AsRef<Path>>(path: P) -> io::Result<[u8; 32]> {
     // Try loading from cache
     let cache_dir = std::env::temp_dir().join("veriai_cache");
     let cache_file = cache_dir.join("model_hashes.json");
-    
+
     if let Ok(cache) = load_cache(&cache_file) {
         let path_str = path.to_string_lossy().into_owned();
         if let Some(entry) = cache.get(&path_str) {
-            if entry.file_size == file_size 
-                && entry.modified_time_secs == mtime_secs 
-                && entry.modified_time_nanos == mtime_nanos 
+            if entry.file_size == file_size
+                && entry.modified_time_secs == mtime_secs
+                && entry.modified_time_nanos == mtime_nanos
             {
                 return Ok(entry.merkle_root);
             }
@@ -99,7 +100,7 @@ fn hash_file_merkle(path: &Path) -> io::Result<[u8; 32]> {
     while current_level.len() > 1 {
         let mut next_level = Vec::with_capacity((current_level.len() + 1) / 2);
         let mut chunks = current_level.chunks_exact(2);
-        
+
         for chunk in &mut chunks {
             let mut hasher = Sha256::new();
             hasher.update(chunk[0]);
@@ -126,8 +127,8 @@ fn load_cache(cache_file: &Path) -> io::Result<HashMap<String, CacheEntry>> {
         return Ok(HashMap::new());
     }
     let file = File::open(cache_file)?;
-    let cache = serde_json::from_reader(file)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let cache =
+        serde_json::from_reader(file).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     Ok(cache)
 }
 

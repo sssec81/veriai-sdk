@@ -1,9 +1,9 @@
 pub mod error;
 pub mod openai;
 
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::de::{MapAccess, Visitor};
 use serde::ser::SerializeMap;
-use serde::de::{Visitor, MapAccess};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::BTreeMap;
 use std::fmt;
 
@@ -164,7 +164,9 @@ impl<'de> Deserialize<'de> for VeriClaims {
                                 arr.copy_from_slice(&val);
                                 client_nonce = Some(arr);
                             } else {
-                                return Err(serde::de::Error::custom("invalid client-nonce length"));
+                                return Err(serde::de::Error::custom(
+                                    "invalid client-nonce length",
+                                ));
                             }
                         }
                         CLAIM_SEQUENCE_NUM => {
@@ -189,11 +191,16 @@ impl<'de> Deserialize<'de> for VeriClaims {
                                 arr.copy_from_slice(&val);
                                 enclave_pubkey = Some(arr);
                             } else {
-                                return Err(serde::de::Error::custom("invalid enclave-pubkey length"));
+                                return Err(serde::de::Error::custom(
+                                    "invalid enclave-pubkey length",
+                                ));
                             }
                         }
                         reserved if (6008..=6010).contains(&reserved) => {
-                            return Err(serde::de::Error::custom(format!("claim key {} is reserved", reserved)));
+                            return Err(serde::de::Error::custom(format!(
+                                "claim key {} is reserved",
+                                reserved
+                            )));
                         }
                         _ => {
                             let _: serde::de::IgnoredAny = map.next_value()?;
@@ -201,16 +208,26 @@ impl<'de> Deserialize<'de> for VeriClaims {
                     }
                 }
 
-                let model_hash = model_hash.ok_or_else(|| serde::de::Error::missing_field("model_hash"))?;
-                let input_hash = input_hash.ok_or_else(|| serde::de::Error::missing_field("input_hash"))?;
-                let output_hash = output_hash.ok_or_else(|| serde::de::Error::missing_field("output_hash"))?;
-                let client_nonce = client_nonce.ok_or_else(|| serde::de::Error::missing_field("client_nonce"))?;
-                let sequence_num = sequence_num.ok_or_else(|| serde::de::Error::missing_field("sequence_num"))?;
-                let attestation_report = attestation_report.ok_or_else(|| serde::de::Error::missing_field("attestation_report"))?;
-                let attestation_type = attestation_type.ok_or_else(|| serde::de::Error::missing_field("attestation_type"))?;
-                let attestation_timestamp = attestation_timestamp.ok_or_else(|| serde::de::Error::missing_field("attestation_timestamp"))?;
-                let sdk_version = sdk_version.ok_or_else(|| serde::de::Error::missing_field("sdk_version"))?;
-                let enclave_pubkey = enclave_pubkey.ok_or_else(|| serde::de::Error::missing_field("enclave_pubkey"))?;
+                let model_hash =
+                    model_hash.ok_or_else(|| serde::de::Error::missing_field("model_hash"))?;
+                let input_hash =
+                    input_hash.ok_or_else(|| serde::de::Error::missing_field("input_hash"))?;
+                let output_hash =
+                    output_hash.ok_or_else(|| serde::de::Error::missing_field("output_hash"))?;
+                let client_nonce =
+                    client_nonce.ok_or_else(|| serde::de::Error::missing_field("client_nonce"))?;
+                let sequence_num =
+                    sequence_num.ok_or_else(|| serde::de::Error::missing_field("sequence_num"))?;
+                let attestation_report = attestation_report
+                    .ok_or_else(|| serde::de::Error::missing_field("attestation_report"))?;
+                let attestation_type = attestation_type
+                    .ok_or_else(|| serde::de::Error::missing_field("attestation_type"))?;
+                let attestation_timestamp = attestation_timestamp
+                    .ok_or_else(|| serde::de::Error::missing_field("attestation_timestamp"))?;
+                let sdk_version =
+                    sdk_version.ok_or_else(|| serde::de::Error::missing_field("sdk_version"))?;
+                let enclave_pubkey = enclave_pubkey
+                    .ok_or_else(|| serde::de::Error::missing_field("enclave_pubkey"))?;
 
                 Ok(VeriClaims {
                     model_hash,

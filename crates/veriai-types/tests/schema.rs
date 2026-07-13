@@ -1,5 +1,5 @@
-use veriai_types::{AttestationDoc, VeriClaims};
 use std::collections::BTreeMap;
+use veriai_types::{AttestationDoc, VeriClaims};
 
 #[test]
 fn test_vericlaims_roundtrip() {
@@ -17,7 +17,8 @@ fn test_vericlaims_roundtrip() {
     };
 
     let serialized = claims.to_binary().expect("Failed to serialize VeriClaims");
-    let deserialized = VeriClaims::from_binary(&serialized).expect("Failed to deserialize VeriClaims");
+    let deserialized =
+        VeriClaims::from_binary(&serialized).expect("Failed to deserialize VeriClaims");
 
     assert_eq!(claims, deserialized);
 }
@@ -41,7 +42,8 @@ fn test_attestation_doc_roundtrip() {
     };
 
     let serialized = doc.to_binary().expect("Failed to serialize AttestationDoc");
-    let deserialized = AttestationDoc::from_binary(&serialized).expect("Failed to deserialize AttestationDoc");
+    let deserialized =
+        AttestationDoc::from_binary(&serialized).expect("Failed to deserialize AttestationDoc");
 
     assert_eq!(doc, deserialized);
 }

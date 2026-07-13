@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use crate::VerificationResult;
+use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct Message {

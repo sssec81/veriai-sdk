@@ -2,9 +2,9 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
-use tower::ServiceExt;
 use serde_json::json;
 use sha2::{Digest, Sha256};
+use tower::ServiceExt;
 use veriai_types::openai::ChatCompletionResponse;
 
 #[tokio::test]
@@ -38,7 +38,9 @@ async fn test_openai_chat_completions_linkage() {
     assert_eq!(response.status(), StatusCode::OK);
 
     // 2. Decode standard OpenAI completions JSON response
-    let body_bytes = axum::body::to_bytes(response.into_body(), 10 * 1024 * 1024).await.unwrap();
+    let body_bytes = axum::body::to_bytes(response.into_body(), 10 * 1024 * 1024)
+        .await
+        .unwrap();
     let chat_response: ChatCompletionResponse = serde_json::from_slice(&body_bytes)
         .expect("Failed to parse standard OpenAI completion response JSON");
 
@@ -46,10 +48,15 @@ async fn test_openai_chat_completions_linkage() {
     assert_eq!(chat_response.choices.len(), 1);
     let choice = &chat_response.choices[0];
     assert_eq!(choice.message.role, "assistant");
-    assert_eq!(choice.message.content, "VeriAI response: hello veriai runtime");
+    assert_eq!(
+        choice.message.content,
+        "VeriAI response: hello veriai runtime"
+    );
 
     // 4. Assert Verification Proof block is valid
-    let proof = chat_response.verification.as_ref()
+    let proof = chat_response
+        .verification
+        .as_ref()
         .expect("Verification proof block is missing in completions response");
     assert!(proof.valid);
     assert_eq!(proof.error, None);
@@ -58,7 +65,9 @@ async fn test_openai_chat_completions_linkage() {
     let expected_input_hash: [u8; 32] = Sha256::digest(b"hello veriai runtime").into();
     let expected_output_hash: [u8; 32] = Sha256::digest(choice.message.content.as_bytes()).into();
 
-    let receipt_info = proof.receipt.as_ref()
+    let receipt_info = proof
+        .receipt
+        .as_ref()
         .expect("Receipt details metadata is missing inside proof");
 
     assert_eq!(receipt_info.input_hash, hex::encode(expected_input_hash));
