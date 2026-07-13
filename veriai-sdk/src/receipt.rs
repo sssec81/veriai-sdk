@@ -1,0 +1,116 @@
+use crate::nsm::get_attestation_document;
+use crate::nsm::schema::VeriClaims;
+use ed25519_dalek::{SigningKey, Signer};
+use sha2::{Digest, Sha512};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
+use coset::{CoseSign1Builder, HeaderBuilder, iana, CborSerializable, ContentType};
+
+/// Generates cryptographically signed receipts binding model identity, hardware attestation, and input/output hashes.
+pub struct ReceiptGenerator {
+    signing_key: SigningKey,
+    sequence_num: AtomicU64,
+}
+
+impl ReceiptGenerator {
+    /// Create a new generator with a randomly generated ephemeral Ed25519 signing key
+    pub fn new() -> Self {
+        let mut rng = rand_core::OsRng;
+        let signing_key = SigningKey::generate(&mut rng);
+        Self {
+            signing_key,
+            sequence_num: AtomicU64::new(0),
+        }
+    }
+
+    /// Explicit constructor using an existing signing key (useful for testing)
+    pub fn with_key(signing_key: SigningKey) -> Self {
+        Self {
+            signing_key,
+            sequence_num: AtomicU64::new(0),
+        }
+    }
+
+    /// Returns the raw 32-byte public key of the enclave's ephemeral keypair
+    pub fn public_key_bytes(&self) -> [u8; 32] {
+        self.signing_key.verifying_key().to_bytes()
+    }
+
+    /// Compute the REPORTDATA binding value for the current ephemeral public key:
+    /// SHA-512(0x01 || "VeriAI-KeyBind-v1" || Ed25519_PubKey_32bytes)
+    pub fn compute_report_data(&self) -> [u8; 64] {
+        let pubkey_bytes = self.public_key_bytes();
+        let mut hasher = Sha512::new();
+        hasher.update(&[0x01]);
+        hasher.update(b"VeriAI-KeyBind-v1");
+        hasher.update(&pubkey_bytes);
+        hasher.finalize().into()
+    }
+
+    /// Generates a signed COSE_Sign1 receipt wrapping custom CWT claims
+    pub fn generate_receipt(
+        &self,
+        model_hash: [u8; 32],
+        input_hash: [u8; 32],
+        output_hash: [u8; 32],
+        client_nonce: [u8; 32],
+    ) -> Result<Vec<u8>, String> {
+        let sequence_num = self.sequence_num.fetch_add(1, Ordering::SeqCst);
+        let pubkey_bytes = self.public_key_bytes();
+        let report_data = self.compute_report_data();
+
+        // 1. Get signed attestation document from the NSM binding it to our key
+        let attestation_report = get_attestation_document(
+            Some(&report_data),
+            Some(&client_nonce),
+            Some(&pubkey_bytes),
+        )?;
+
+        let now_sec = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_secs() as i64;
+
+        // 2. Build VeriClaims
+        let claims = VeriClaims {
+            model_hash,
+            input_hash,
+            output_hash,
+            client_nonce,
+            sequence_num,
+            attestation_report,
+            attestation_type: 3, // 3 = Nitro
+            attestation_timestamp: now_sec,
+            sdk_version: env!("CARGO_PKG_VERSION").to_string(),
+            enclave_pubkey: pubkey_bytes,
+        };
+
+        let payload = claims.to_binary().map_err(|e| e.to_string())?;
+
+        // 3. Wrap in COSE_Sign1
+        let protected = HeaderBuilder::new()
+            .algorithm(iana::Algorithm::EdDSA)
+            .build();
+
+        let mut cose_sign1 = CoseSign1Builder::new()
+            .protected(protected)
+            .payload(payload)
+            .build();
+
+        // Set the content-type header (alg is already set, kid is omitted by default)
+        cose_sign1.unprotected.content_type = Some(ContentType::Text("application/cwt".to_string()));
+
+        // 4. Sign with the ephemeral Ed25519 key
+        let tbs = cose_sign1.tbs_data(&[]);
+        let signature = self.signing_key.sign(&tbs);
+        cose_sign1.signature = signature.to_bytes().to_vec();
+
+        cose_sign1.to_vec().map_err(|e| format!("Failed to serialize COSE receipt: {}", e))
+    }
+}
+
+impl Default for ReceiptGenerator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
