@@ -243,6 +243,18 @@ impl Verifier {
 
         Ok(())
     }
+
+    /// Returns a copy of the internal sequence validation state (if stateful)
+    pub fn get_state(&self) -> Option<HashMap<[u8; 32], u64>> {
+        self.state.as_ref().map(|s| s.lock().unwrap().clone())
+    }
+
+    /// Sets/restores the internal sequence validation state (if stateful)
+    pub fn set_state(&self, new_state: HashMap<[u8; 32], u64>) {
+        if let Some(ref s) = self.state {
+            *s.lock().unwrap() = new_state;
+        }
+    }
 }
 
 fn compute_identity_fingerprint(doc: &AttestationDoc) -> [u8; 32] {
