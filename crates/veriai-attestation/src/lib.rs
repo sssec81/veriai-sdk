@@ -1,9 +1,7 @@
 pub mod mock;
 
 #[cfg(all(feature = "mock-hardware", not(any(test, debug_assertions))))]
-compile_error!(
-    "Production release builds cannot be compiled with mock-hardware enabled."
-);
+compile_error!("Production release builds cannot be compiled with mock-hardware enabled.");
 
 #[cfg(feature = "real-hardware")]
 pub mod nitro;

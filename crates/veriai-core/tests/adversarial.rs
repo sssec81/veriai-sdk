@@ -265,12 +265,13 @@ async fn test_adversarial_replay_attack() {
 async fn test_adversarial_oversized_receipt() {
     let provider = Arc::new(MockAttestationProvider::new());
     let generator = ReceiptGenerator::new(provider.clone());
-    
+
     // Configure verifier with 200 bytes limit
     let mut config = veriai_core::verify::VerifierConfig::default();
     config.max_receipt_size = 200;
-    
-    let verifier = Verifier::from_pem_with_config(provider.clone(), MOCK_ROOT_PEM, false, config).unwrap();
+
+    let verifier =
+        Verifier::from_pem_with_config(provider.clone(), MOCK_ROOT_PEM, false, config).unwrap();
 
     let model_hash = [0x11; 32];
     let input_hash = [0x22; 32];
@@ -283,10 +284,20 @@ async fn test_adversarial_oversized_receipt() {
         .unwrap();
 
     let res = verifier
-        .verify(&receipt, model_hash, input_hash, output_hash, client_nonce, &vec![0u8; 48])
+        .verify(
+            &receipt,
+            model_hash,
+            input_hash,
+            output_hash,
+            client_nonce,
+            &vec![0u8; 48],
+        )
         .await;
 
-    assert!(matches!(res, Err(veriai_types::error::VerifyError::ReceiptTooLarge)));
+    assert!(matches!(
+        res,
+        Err(veriai_types::error::VerifyError::ReceiptTooLarge)
+    ));
 }
 
 #[tokio::test]
@@ -318,7 +329,14 @@ async fn test_adversarial_future_timestamp() {
     // However, if we recalculate or directly verify, it will catch the invalid timestamp bounds.
     let tampered_receipt = cose_receipt.to_vec().unwrap();
     let res = verifier
-        .verify(&tampered_receipt, model_hash, input_hash, output_hash, client_nonce, &vec![0u8; 48])
+        .verify(
+            &tampered_receipt,
+            model_hash,
+            input_hash,
+            output_hash,
+            client_nonce,
+            &vec![0u8; 48],
+        )
         .await;
 
     // It fails expiration or signature checks first
@@ -348,19 +366,39 @@ async fn test_adversarial_algorithm_agility_downgrade() {
     let tampered_receipt = cose_receipt.to_vec().unwrap();
 
     let res = verifier
-        .verify(&tampered_receipt, model_hash, input_hash, output_hash, client_nonce, &vec![0u8; 48])
+        .verify(
+            &tampered_receipt,
+            model_hash,
+            input_hash,
+            output_hash,
+            client_nonce,
+            &vec![0u8; 48],
+        )
         .await;
-    assert!(matches!(res, Err(veriai_types::error::VerifyError::AlgorithmInUnprotectedHeader)));
+    assert!(matches!(
+        res,
+        Err(veriai_types::error::VerifyError::AlgorithmInUnprotectedHeader)
+    ));
 
     // 2. Attack: unsupported algorithm inside protected header
     let mut cose_receipt2 = CoseSign1::from_slice(&receipt).unwrap();
-    cose_receipt2.protected.header.alg = Some(coset::Algorithm::Assigned(coset::iana::Algorithm::ES256));
+    cose_receipt2.protected.header.alg =
+        Some(coset::Algorithm::Assigned(coset::iana::Algorithm::ES256));
     cose_receipt2.protected.original_data = None;
     let tampered_receipt2 = cose_receipt2.to_vec().unwrap();
 
     let res2 = verifier
-        .verify(&tampered_receipt2, model_hash, input_hash, output_hash, client_nonce, &vec![0u8; 48])
+        .verify(
+            &tampered_receipt2,
+            model_hash,
+            input_hash,
+            output_hash,
+            client_nonce,
+            &vec![0u8; 48],
+        )
         .await;
-    assert!(matches!(res2, Err(veriai_types::error::VerifyError::UnsupportedAlgorithm)));
+    assert!(matches!(
+        res2,
+        Err(veriai_types::error::VerifyError::UnsupportedAlgorithm)
+    ));
 }
-

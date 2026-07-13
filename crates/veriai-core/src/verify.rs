@@ -106,7 +106,12 @@ impl Verifier {
             return Err("No certificates found in PEM".to_string());
         }
 
-        Ok(Self::new_with_config(provider, trusted_roots, stateful, config))
+        Ok(Self::new_with_config(
+            provider,
+            trusted_roots,
+            stateful,
+            config,
+        ))
     }
 
     /// Validates a VeriAI receipt and returns a detailed VerificationResult
@@ -157,7 +162,12 @@ impl Verifier {
             Ok(c) => {
                 // Check 0B: Algorithm Agility and Downgrade checks
                 // 1. Verify protected header specifies EdDSA (-8)
-                let protected_alg = c.protected.header.alg.as_ref().ok_or(VerifyError::InvalidProtectedHeader)?;
+                let protected_alg = c
+                    .protected
+                    .header
+                    .alg
+                    .as_ref()
+                    .ok_or(VerifyError::InvalidProtectedHeader)?;
                 match protected_alg {
                     coset::Algorithm::Assigned(coset::iana::Algorithm::EdDSA) => {}
                     _ => {
