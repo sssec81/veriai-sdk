@@ -7,7 +7,7 @@ echo "=== VeriAI SDK CLI Demo ==="
 cargo build -p veriai-cli --features mock-hardware
 
 # Define executable path
-VERIAI="./target/debug/veriai-cli"
+VERIAI="./target/debug/veriai"
 
 # Create temporary test files
 echo "initializing model file..."
