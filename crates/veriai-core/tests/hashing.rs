@@ -12,8 +12,8 @@ fn test_empty_file_hash() {
 
     let hash = compute_model_hash(&file_path).expect("Failed to compute hash");
     // SHA256 of empty bytes
-    let expected = sha2::Sha256::digest(&[]);
-    assert_eq!(hash, expected.as_slice());
+    let expected = sha2::Sha256::digest([]);
+    assert_eq!(hash, expected.as_ref());
 }
 
 #[test]
@@ -26,7 +26,7 @@ fn test_small_file_hash() {
     let hash = compute_model_hash(&file_path).expect("Failed to compute hash");
     // SHA256 of "hello veriai"
     let expected = sha2::Sha256::digest(b"hello veriai");
-    assert_eq!(hash, expected.as_slice());
+    assert_eq!(hash, expected.as_ref());
 }
 
 #[test]

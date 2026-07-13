@@ -35,13 +35,12 @@ pub fn compute_model_hash<P: AsRef<Path>>(path: P) -> io::Result<[u8; 32]> {
 
     if let Ok(cache) = load_cache(&cache_file) {
         let path_str = path.to_string_lossy().into_owned();
-        if let Some(entry) = cache.get(&path_str) {
-            if entry.file_size == file_size
+        if let Some(entry) = cache.get(&path_str).filter(|entry| {
+            entry.file_size == file_size
                 && entry.modified_time_secs == mtime_secs
                 && entry.modified_time_nanos == mtime_nanos
-            {
-                return Ok(entry.merkle_root);
-            }
+        }) {
+            return Ok(entry.merkle_root);
         }
     }
 
@@ -91,14 +90,14 @@ fn hash_file_merkle(path: &Path) -> io::Result<[u8; 32]> {
 
     // If file is empty, hash of empty bytes
     if leaves.is_empty() {
-        let hash: [u8; 32] = Sha256::digest(&[]).into();
+        let hash: [u8; 32] = Sha256::digest([]).into();
         return Ok(hash);
     }
 
     // Compute Merkle root from leaves
     let mut current_level = leaves;
     while current_level.len() > 1 {
-        let mut next_level = Vec::with_capacity((current_level.len() + 1) / 2);
+        let mut next_level = Vec::with_capacity(current_level.len().div_ceil(2));
         let mut chunks = current_level.chunks_exact(2);
 
         for chunk in &mut chunks {
@@ -140,7 +139,6 @@ fn save_cache(cache_file: &Path, key: &str, entry: CacheEntry) -> io::Result<()>
     cache.insert(key.to_string(), entry);
 
     let file = File::create(cache_file)?;
-    serde_json::to_writer_pretty(file, &cache)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    serde_json::to_writer_pretty(file, &cache).map_err(io::Error::other)?;
     Ok(())
 }

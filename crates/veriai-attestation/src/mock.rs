@@ -36,6 +36,11 @@ impl MockAttestationProvider {
         Self
     }
 }
+impl Default for MockAttestationProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[async_trait]
 impl AttestationProvider for MockAttestationProvider {

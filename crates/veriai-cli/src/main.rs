@@ -206,21 +206,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let verifier = Verifier::from_pem(provider.clone(), &root_pem, use_stateful)?;
 
             // Load saved state if stateful and session file exists
-            if let Some(ref session_path) = stateful {
-                if session_path.exists() {
-                    let file = File::open(session_path)?;
-                    let saved_state: HashMap<String, u64> = serde_json::from_reader(file)?;
-                    let mut decoded_state = HashMap::new();
-                    for (k, v) in saved_state {
-                        let bytes = hex::decode(&k)?;
-                        let mut fp = [0u8; 32];
-                        if bytes.len() == 32 {
-                            fp.copy_from_slice(&bytes);
-                            decoded_state.insert(fp, v);
-                        }
+            if let Some(ref session_path) = stateful.as_ref().filter(|p| p.exists()) {
+                let file = File::open(session_path)?;
+                let saved_state: HashMap<String, u64> = serde_json::from_reader(file)?;
+                let mut decoded_state = HashMap::new();
+                for (k, v) in saved_state {
+                    let bytes = hex::decode(&k)?;
+                    let mut fp = [0u8; 32];
+                    if bytes.len() == 32 {
+                        fp.copy_from_slice(&bytes);
+                        decoded_state.insert(fp, v);
                     }
-                    verifier.set_state(decoded_state);
                 }
+                verifier.set_state(decoded_state);
             }
 
             println!("\nVeriAI Receipt Verification");
@@ -263,15 +261,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             // Save updated state if stateful
-            if let Some(ref session_path) = stateful {
-                if let Some(state_map) = verifier.get_state() {
-                    let hex_state: HashMap<String, u64> = state_map
-                        .into_iter()
-                        .map(|(k, v)| (hex::encode(k), v))
-                        .collect();
-                    let file = File::create(session_path)?;
-                    serde_json::to_writer_pretty(file, &hex_state)?;
-                }
+            if let Some((session_path, state_map)) = stateful.as_ref().zip(verifier.get_state()) {
+                let hex_state: HashMap<String, u64> = state_map
+                    .into_iter()
+                    .map(|(k, v)| (hex::encode(k), v))
+                    .collect();
+                let file = File::create(session_path)?;
+                serde_json::to_writer_pretty(file, &hex_state)?;
             }
         }
     }

@@ -46,9 +46,9 @@ impl ReceiptGenerator {
     pub fn compute_report_data(&self) -> [u8; 64] {
         let pubkey_bytes = self.public_key_bytes();
         let mut hasher = Sha512::new();
-        hasher.update(&[0x01]);
+        hasher.update([0x01]);
         hasher.update(b"VeriAI-KeyBind-v1");
-        hasher.update(&pubkey_bytes);
+        hasher.update(pubkey_bytes);
         hasher.finalize().into()
     }
 

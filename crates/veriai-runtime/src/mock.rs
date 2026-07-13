@@ -9,6 +9,11 @@ impl MockRuntime {
         Self
     }
 }
+impl Default for MockRuntime {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[async_trait]
 impl InferenceRuntime for MockRuntime {

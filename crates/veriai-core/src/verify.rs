@@ -353,9 +353,9 @@ impl Verifier {
         };
 
         let mut hasher = Sha512::new();
-        hasher.update(&[0x01]);
+        hasher.update([0x01]);
         hasher.update(b"VeriAI-KeyBind-v1");
-        hasher.update(&claims.enclave_pubkey);
+        hasher.update(claims.enclave_pubkey);
         let expected_report_data: [u8; 64] = hasher.finalize().into();
 
         if doc_user_data == &expected_report_data {
@@ -419,18 +419,19 @@ impl Verifier {
             let mut state = state_mutex.lock().unwrap();
             let identity_fingerprint = compute_identity_fingerprint(&doc);
 
-            if let Some(&last_seq) = state.get(&identity_fingerprint) {
-                if claims.sequence_num <= last_seq {
-                    add_check!(
-                        "Sequence Check",
-                        "failed",
-                        Some(format!(
-                            "Sequence {} is out of order (last was {})",
-                            claims.sequence_num, last_seq
-                        ))
-                    );
-                    return Ok(fail_result!(VerifyError::SequenceNumberOutOfOrder, checks));
-                }
+            if let Some(&last_seq) = state
+                .get(&identity_fingerprint)
+                .filter(|&&last| claims.sequence_num <= last)
+            {
+                add_check!(
+                    "Sequence Check",
+                    "failed",
+                    Some(format!(
+                        "Sequence {} is out of order (last was {})",
+                        claims.sequence_num, last_seq
+                    ))
+                );
+                return Ok(fail_result!(VerifyError::SequenceNumberOutOfOrder, checks));
             }
             state.insert(identity_fingerprint, claims.sequence_num);
             add_check!("Sequence Check", "passed", None);
@@ -472,13 +473,17 @@ fn compute_identity_fingerprint(doc: &AttestationDoc) -> [u8; 32] {
     hasher.update(doc.pcrs.get(&3).cloned().unwrap_or_default());
     hasher.update(doc.pcrs.get(&4).cloned().unwrap_or_default());
     hasher.update(doc.module_id.as_bytes());
-    hasher.update(&cert_fingerprint);
+    hasher.update(cert_fingerprint);
     hasher.finalize().into()
 }
 
 fn claims_version_str(sdk_version: &str) -> String {
     if sdk_version.contains('/') {
-        sdk_version.split('/').last().unwrap_or("1").to_string()
+        sdk_version
+            .split('/')
+            .next_back()
+            .unwrap_or("1")
+            .to_string()
     } else {
         "1".to_string()
     }
