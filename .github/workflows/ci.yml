@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  test:
+    name: Build, Lint and Test Workspace
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Sources
+        uses: actions/checkout@v3
+
+      - name: Install Stable Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Cargo Dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Verify Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy Linter
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Run Workspace Tests
+        run: cargo test --workspace
