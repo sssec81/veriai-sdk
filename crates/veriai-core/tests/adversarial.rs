@@ -267,8 +267,10 @@ async fn test_adversarial_oversized_receipt() {
     let generator = ReceiptGenerator::new(provider.clone());
 
     // Configure verifier with 200 bytes limit
-    let mut config = veriai_core::verify::VerifierConfig::default();
-    config.max_receipt_size = 200;
+    let config = veriai_core::verify::VerifierConfig {
+        max_receipt_size: 200,
+        ..Default::default()
+    };
 
     let verifier =
         Verifier::from_pem_with_config(provider.clone(), MOCK_ROOT_PEM, false, config).unwrap();
@@ -290,7 +292,7 @@ async fn test_adversarial_oversized_receipt() {
             input_hash,
             output_hash,
             client_nonce,
-            &vec![0u8; 48],
+            &[0u8; 48],
         )
         .await;
 
@@ -335,7 +337,7 @@ async fn test_adversarial_future_timestamp() {
             input_hash,
             output_hash,
             client_nonce,
-            &vec![0u8; 48],
+            &[0u8; 48],
         )
         .await;
 
@@ -372,7 +374,7 @@ async fn test_adversarial_algorithm_agility_downgrade() {
             input_hash,
             output_hash,
             client_nonce,
-            &vec![0u8; 48],
+            &[0u8; 48],
         )
         .await;
     assert!(matches!(
@@ -394,7 +396,7 @@ async fn test_adversarial_algorithm_agility_downgrade() {
             input_hash,
             output_hash,
             client_nonce,
-            &vec![0u8; 48],
+            &[0u8; 48],
         )
         .await;
     assert!(matches!(
