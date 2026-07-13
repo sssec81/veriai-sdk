@@ -8,4 +8,4 @@ compile_error!("Feature 'mock-hardware' is not allowed in release builds. Use --
 
 pub mod error;
 pub mod nsm;
-
+pub mod hashing;
