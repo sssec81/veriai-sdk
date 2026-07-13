@@ -5,6 +5,7 @@ members = [
     "crates/veriai-attestation",
     "crates/veriai-cli",
     "crates/verifier-service",
+    "crates/veriai-runtime",
     "examples/01-chat-demo",
 ]
 resolver = "2"

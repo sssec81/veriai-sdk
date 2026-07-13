@@ -1,0 +1,10 @@
+[package]
+name = "veriai-runtime"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+veriai-types = { path = "../veriai-types" }
+serde = { version = "1.0", features = ["derive"] }
+async-trait = "0.1"
+thiserror = "1.0"

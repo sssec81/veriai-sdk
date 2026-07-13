@@ -1,4 +1,5 @@
 pub mod error;
+pub mod openai;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde::ser::SerializeMap;
