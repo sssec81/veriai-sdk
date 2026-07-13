@@ -4,10 +4,10 @@ set -e
 echo "=== VeriAI SDK CLI Demo ==="
 
 # Build the project
-cargo build --manifest-path veriai-sdk/Cargo.toml --features mock-hardware
+cargo build -p veriai-cli --features mock-hardware
 
 # Define executable path
-VERIAI="./veriai-sdk/target/debug/veriai"
+VERIAI="./target/debug/veriai-cli"
 
 # Create temporary test files
 echo "initializing model file..."
@@ -35,6 +35,11 @@ $VERIAI generate \
 
 echo "Receipt created successfully!"
 
+# 1.5 Inspect Receipt
+echo "--> Inspecting receipt..."
+$VERIAI inspect receipt.cose
+echo ""
+
 # 2. Verify Receipt (Should succeed)
 echo "--> Verifying receipt (expected success)..."
 $VERIAI verify \
@@ -44,7 +49,7 @@ $VERIAI verify \
   --output-file dummy_output.txt \
   --nonce $NONCE \
   --expected-pcr0 000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 \
-  --root-cert veriai-sdk/tests/fixtures/mock-aws-root.pem
+  --root-cert tests/fixtures/mock-aws-root.pem
 
 echo "Verification succeeded!"
 
@@ -58,7 +63,7 @@ if $VERIAI verify \
   --output-file dummy_output.txt \
   --nonce $NONCE \
   --expected-pcr0 000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 \
-  --root-cert veriai-sdk/tests/fixtures/mock-aws-root.pem 2>/dev/null; then
+  --root-cert tests/fixtures/mock-aws-root.pem 2>/dev/null; then
     echo "ERROR: Verification succeeded but should have failed!"
     exit 1
 else

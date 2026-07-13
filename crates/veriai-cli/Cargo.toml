@@ -1,0 +1,25 @@
+[package]
+name = "veriai-cli"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = ["mock-hardware"]
+mock-hardware = ["veriai-core/mock-hardware", "veriai-attestation/mock-hardware"]
+real-hardware = ["veriai-core/real-hardware", "veriai-attestation/real-hardware"]
+test-mode = ["veriai-core/test-mode"]
+
+[dependencies]
+veriai-types = { path = "../veriai-types" }
+veriai-core = { path = "../veriai-core", default-features = false }
+veriai-attestation = { path = "../veriai-attestation", default-features = false }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+clap = { version = "4.4", features = ["derive"] }
+hex = "0.4"
+rand_core = { version = "0.6", features = ["getrandom"] }
+tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }
+coset = "0.3"
+
+

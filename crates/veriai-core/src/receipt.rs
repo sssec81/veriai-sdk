@@ -1,31 +1,36 @@
-use crate::nsm::get_attestation_document;
-use crate::nsm::schema::VeriClaims;
 use ed25519_dalek::{SigningKey, Signer};
 use sha2::{Digest, Sha512};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use coset::{CoseSign1Builder, HeaderBuilder, iana, CborSerializable, ContentType};
+use veriai_attestation::AttestationProvider;
+use veriai_types::VeriClaims;
+use veriai_types::error::VerifyError;
 
 /// Generates cryptographically signed receipts binding model identity, hardware attestation, and input/output hashes.
 pub struct ReceiptGenerator {
+    provider: Arc<dyn AttestationProvider>,
     signing_key: SigningKey,
     sequence_num: AtomicU64,
 }
 
 impl ReceiptGenerator {
     /// Create a new generator with a randomly generated ephemeral Ed25519 signing key
-    pub fn new() -> Self {
+    pub fn new(provider: Arc<dyn AttestationProvider>) -> Self {
         let mut rng = rand_core::OsRng;
         let signing_key = SigningKey::generate(&mut rng);
         Self {
+            provider,
             signing_key,
             sequence_num: AtomicU64::new(0),
         }
     }
 
     /// Explicit constructor using an existing signing key (useful for testing)
-    pub fn with_key(signing_key: SigningKey) -> Self {
+    pub fn with_key(provider: Arc<dyn AttestationProvider>, signing_key: SigningKey) -> Self {
         Self {
+            provider,
             signing_key,
             sequence_num: AtomicU64::new(0),
         }
@@ -48,27 +53,27 @@ impl ReceiptGenerator {
     }
 
     /// Generates a signed COSE_Sign1 receipt wrapping custom CWT claims
-    pub fn generate_receipt(
+    pub async fn generate_receipt(
         &self,
         model_hash: [u8; 32],
         input_hash: [u8; 32],
         output_hash: [u8; 32],
         client_nonce: [u8; 32],
-    ) -> Result<Vec<u8>, String> {
+    ) -> Result<Vec<u8>, VerifyError> {
         let sequence_num = self.sequence_num.fetch_add(1, Ordering::SeqCst);
         let pubkey_bytes = self.public_key_bytes();
         let report_data = self.compute_report_data();
 
         // 1. Get signed attestation document from the NSM binding it to our key
-        let attestation_report = get_attestation_document(
+        let attestation_report = self.provider.generate(
             Some(&report_data),
             Some(&client_nonce),
             Some(&pubkey_bytes),
-        )?;
+        ).await.map_err(|e| VerifyError::Attestation(e.to_string()))?;
 
         let now_sec = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map_err(|e| e.to_string())?
+            .map_err(|e| VerifyError::InvalidAttestationDocument(e.to_string()))?
             .as_secs() as i64;
 
         // 2. Build VeriClaims
@@ -85,7 +90,8 @@ impl ReceiptGenerator {
             enclave_pubkey: pubkey_bytes,
         };
 
-        let payload = claims.to_binary().map_err(|e| e.to_string())?;
+        let payload = claims.to_binary()
+            .map_err(|_| VerifyError::MalformedReceipt)?;
 
         // 3. Wrap in COSE_Sign1
         let protected = HeaderBuilder::new()
@@ -97,7 +103,6 @@ impl ReceiptGenerator {
             .payload(payload)
             .build();
 
-        // Set the content-type header (alg is already set, kid is omitted by default)
         cose_sign1.unprotected.content_type = Some(ContentType::Text("application/cwt".to_string()));
 
         // 4. Sign with the ephemeral Ed25519 key
@@ -105,12 +110,7 @@ impl ReceiptGenerator {
         let signature = self.signing_key.sign(&tbs);
         cose_sign1.signature = signature.to_bytes().to_vec();
 
-        cose_sign1.to_vec().map_err(|e| format!("Failed to serialize COSE receipt: {}", e))
-    }
-}
-
-impl Default for ReceiptGenerator {
-    fn default() -> Self {
-        Self::new()
+        cose_sign1.to_vec()
+            .map_err(|_| VerifyError::MalformedReceipt)
     }
 }

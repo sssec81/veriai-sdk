@@ -1,0 +1,9 @@
+[workspace]
+members = [
+    "crates/veriai-types",
+    "crates/veriai-core",
+    "crates/veriai-attestation",
+    "crates/veriai-cli",
+    "crates/verifier-service",
+]
+resolver = "2"

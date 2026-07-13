@@ -1,3 +1,5 @@
+pub mod error;
+
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde::ser::SerializeMap;
 use serde::de::{Visitor, MapAccess};
@@ -193,7 +195,6 @@ impl<'de> Deserialize<'de> for VeriClaims {
                             return Err(serde::de::Error::custom(format!("claim key {} is reserved", reserved)));
                         }
                         _ => {
-                            // Skip unknown claims for forward compatibility
                             let _: serde::de::IgnoredAny = map.next_value()?;
                         }
                     }
@@ -227,4 +228,31 @@ impl<'de> Deserialize<'de> for VeriClaims {
 
         deserializer.deserialize_map(VeriClaimsVisitor)
     }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct VerificationCheck {
+    pub name: String,
+    pub status: String, // "passed" or "failed"
+    pub details: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct ReceiptInfo {
+    pub version: String,
+    pub model_hash: String,
+    pub input_hash: String,
+    pub output_hash: String,
+    pub sequence_num: u64,
+    pub timestamp: i64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct VerificationResult {
+    pub valid: bool,
+    pub receipt: Option<ReceiptInfo>,
+    pub checks: Vec<VerificationCheck>,
+    pub attestation_provider: String,
+    pub verified_hardware: bool,
+    pub error: Option<String>,
 }
