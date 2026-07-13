@@ -10,4 +10,6 @@ pub mod error;
 pub mod nsm;
 pub mod hashing;
 pub mod receipt;
+pub mod verify;
+
 
