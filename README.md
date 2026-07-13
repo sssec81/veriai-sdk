@@ -1,12 +1,36 @@
-# VeriAI SDK 🛡️
+# VeriAI Platform 🛡️
 
-VeriAI is a lightweight, vendor-agnostic attestation SDK for verifiable AI inference. It generates cryptographically signed receipts that bind model identity, input/output parameters, and secure hardware attestation (AWS Nitro Enclaves) to prove exactly what model was run, with what parameters, on what TEE hardware.
+[![Rust](https://img.shields.io/badge/Rust-1.80%2B-blue)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/License-Apache%202.0-green)](LICENSE)
+[![CI Status](https://github.com/sssec81/veriai-sdk/workflows/CI/badge.svg)](https://github.com/sssec81/veriai-sdk/actions)
+[![Security Review](https://img.shields.io/badge/Security-Threat%20Reviewed-orange)](security_review.md)
+
+VeriAI is a Confidential AI Verification Platform and modular workspace. It generates and validates cryptographically signed receipts that bind model identity, input/output parameters, and secure hardware attestation (AWS Nitro Enclaves) to prove exactly what model was run, with what parameters, on what TEE hardware.
 
 > [!IMPORTANT]
-> **Security Model Warning (Library vs. Proxy Mode)**
+> **Deployment Configurations (Library vs. Proxy Mode)**
 > VeriAI operates in two distinct deployment configurations:
 > - **Library Mode (Low-friction default)**: The SDK is imported by the host application to generate attestation documents and hash I/O. **Warning**: This mode *does not* prevent a dishonest operator from passing fabricated input/output bytes to the SDK while executing a completely different model.
-> - **Proxy Mode (Secure)**: The VeriAI SDK runs as an intercepting proxy inside the secure AWS Nitro Enclave, directly managing inference I/O. Because the proxy binary is baked into the enclave's `PCR0`, clients can verify that the proxy itself is handling the data, shutting down operator-fabrication attacks. **Full protection is only achieved in Proxy Mode.**
+> - **Proxy Mode (Secure)**: The VeriAI proxy runs as an intercepting proxy inside the secure AWS Nitro Enclave, directly managing inference I/O. Because the proxy binary is baked into the enclave's `PCR0`, clients can verify that the proxy itself is handling the data, shutting down operator-fabrication attacks. **Full protection is only achieved in Proxy Mode.**
+
+---
+
+## Workspace Structure
+
+The project is organized into a modular Cargo workspace isolating concerns:
+
+```
+crates/
+├── veriai-types       # Shared CWT schemas, error definitions, and OpenAI API structures
+├── veriai-core        # Merkle Tree hashing, receipt building, and verification engines
+├── veriai-attestation # Hardware Attestation provider trait and mock/real driver backends
+├── veriai-runtime     # InferenceRuntime traits and modular LLM adapters (mock/llama.cpp)
+├── veriai-cli         # "veriai" CLI binary implementing inspect/verify checkmarks
+└── verifier-service   # Axum REST service exposing JSON checklist verify endpoints
+
+examples/
+└── 01-chat-demo       # OpenAI-compatible completions server exporting verified receipts inline
+```
 
 ---
 
@@ -19,14 +43,14 @@ sequenceDiagram
     participant Proxy as Proxy (Inside Enclave)
     participant NSM as Nitro Secure Module (/dev/nsm)
 
-    Client->>Proxy: Inference Request + Nonce
-    Note over Proxy: 1. MMAP Model File (Merkle root computed/cached)
+    Client->>Proxy: POST /v1/chat/completions (Prompt + Nonce)
+    Note over Proxy: 1. Dispatch to InferenceRuntime (Mock/llama.cpp)
     Note over Proxy: 2. Capture canonical inputs/outputs (SHA-256)
     Proxy->>NSM: Attestation Request (binds nonce, pubkey, & user_data)
     NSM->>Proxy: signed COSE_Sign1 Attestation Document
     Note over Proxy: 3. Assemble CWT Claims (6000-6012)
     Note over Proxy: 4. Sign Receipt with Ephemeral Ed25519 Key
-    Proxy->>Client: signed COSE Receipt
+    Proxy->>Client: ChatCompletionResponse + inline Verification block
     Note over Client: 5. Execute 6-Step Verification Chain
 ```
 
@@ -34,24 +58,75 @@ sequenceDiagram
 
 ## Quick Start (Zero-Budget Simulation)
 
-You can run a full end-to-end enclave simulation directly on your local machine (macOS/Linux) without spending a dime on AWS credits:
+You can run a full E2E local enclave and completions server simulation directly on your local machine:
 
+### 1. Run local E2E simulation script
 ```bash
-# Clone the repository
-git clone https://github.com/sssec81/veriai-sdk.git
-cd veriai-sdk
-
-# Execute the local mock hardware demo
+# Execute local mock hardware pipeline
 chmod +x demo.sh
 ./demo.sh
 ```
 
-This runs a full pipeline simulation using the `--features mock-hardware` flag:
-1. Compiles the CLI tool.
-2. Creates dummy model, input, and output files.
-3. Generates a signed COSE receipt (simulating AWS Nitro hypervisor certificate chain signatures).
-4. Verifies the receipt against a mock CA root.
-5. Simulates tampering and asserts that the verifier correctly rejects the tampered request.
+### 2. Start the OpenAI Chat Completions Server
+```bash
+# Launch completions endpoint
+cargo run -p chat-demo
+```
+Send a chat request matching standard OpenAI completions signatures:
+```bash
+curl -X POST http://localhost:3000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "veriai-llama",
+    "messages": [{"role": "user", "content": "hello veriai"}]
+  }'
+```
+Response contains the completion output alongside the inline VeriAI cryptographic verification proof:
+```json
+{
+  "id": "chatcmpl-veriai-001",
+  "object": "chat.completion",
+  "created": 1783963570,
+  "model": "veriai-llama",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "VeriAI response: hello veriai"
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 3,
+    "completion_tokens": 15,
+    "total_tokens": 18
+  },
+  "verification": {
+    "valid": true,
+    "receipt": {
+      "version": "1",
+      "model_hash": "5555555555555555555555555555555555555555555555555555555555555555",
+      "input_hash": "52f82162237072eb234399e6b47c9927b2439927b2439927b2439927b2439927",
+      "output_hash": "cc03ff251a48f3dc541567f9b91231dc53b6826ae1e892617067ada86d543137",
+      "sequence_num": 0,
+      "timestamp": 1783963570
+    },
+    "checks": [
+      { "name": "Receipt Format", "status": "passed", "details": null },
+      { "name": "Claims Parsing", "status": "passed", "details": null },
+      { "name": "Receipt Signature", "status": "passed", "details": null },
+      { "name": "Attestation Signature & Chain", "status": "passed", "details": null },
+      { "name": "PCR0 Check", "status": "passed", "details": null },
+      { "name": "REPORTDATA Binding", "status": "passed", "details": null }
+    ],
+    "attestation_provider": "nitro",
+    "verified_hardware": true,
+    "error": null
+  }
+}
+```
 
 ---
 
@@ -61,51 +136,40 @@ VeriAI uses compile-time guards to prevent accidentally deploying mock hardware 
 
 - `mock-hardware` (Default for dev/local testing): Uses simulated NSM API and signs certificates using a test PKI. **Compile-time blocked in release builds.**
 - `real-hardware`: Configures the SDK to open `/dev/nsm` using the official `aws-nitro-enclaves-nsm-api` driver.
-- `test-mode`: Bypasses the release-mode compile guard (only for testing release binaries in CI/CD).
 
 ### Compiling for Production
-To build the production-ready SDK library for deployment inside an AWS Nitro Enclave:
+To build the production-ready SDK library for deployment inside an AWS Nitro Enclaves:
 ```bash
 cargo build --release --no-default-features --features real-hardware
 ```
 
 ---
 
-## The 6-Step Verification Chain
+## Operations & Hardening Configuration
 
-VeriAI enforces a strict cryptographic verification chain:
+The verifier supports strict panic-free validation constraints configured via `VerifierConfig`:
 
-1. **Signature Verification**: Validates the outer receipt signature using the enclave's ephemeral `enclave-pubkey` (Claim 6012).
-2. **Attestation Validation**: Decodes the Nitro attestation report, validates its signature against the certificate chain up to the Root CA, and enforces a strict ±5 minute clock-skew tolerance.
-3. **PCR0 Validation**: Verifies the enclave's PCR0 measurement matches the `expected_pcr0`.
-4. **Pubkey Binding**: Confirms the public key inside the attestation report matches `enclave-pubkey` (6012).
-5. **REPORTDATA Binding**: Checks that the attestation's user data matches the key binding signature:
-   $$\text{REPORTDATA} = \text{SHA-512}(0\text{x}01 \mathbin{\Vert} \text{"VeriAI-KeyBind-v1"} \mathbin{\Vert} \text{Ed25519\_PubKey\_32bytes})$$
-6. **Payload Checks**: Validates nonces, matches model/input/output hashes, and strictly monitors monotonic sequence numbers using identity fingerprinting.
+```rust
+pub struct VerifierConfig {
+    pub max_receipt_size: usize, // Default: 64 KB (rejects oversized CBOR buffers before parsing)
+    pub max_clock_skew: i64,      // Default: 300s (rejects attestation time skews)
+    pub max_receipt_age: i64,     // Default: 300s (rejects old/expired receipt replays)
+}
+```
 
 ---
 
-## CWT Claims Registry
+## Threat Model & Security Review
 
-Custom CBOR Web Token (CWT) claims used in VeriAI receipts:
-
-| Key | CDDL Type | Name | Description |
-|---|---|---|---|
-| **6000** | `bstr` | `model-hash` | SHA-256 Merkle root of the model weights |
-| **6001** | `bstr` | `input-hash` | SHA-256 hash of the inference inputs |
-| **6002** | `bstr` | `output-hash` | SHA-256 hash of the inference outputs |
-| **6003** | `bstr` | `client-nonce` | Client-provided nonce (replayed in Nitro doc) |
-| **6004** | `uint` | `sequence-num` | Monotonic sequence number (resets on reboot) |
-| **6005** | `bstr` | `attestation-report` | Raw CBOR COSE_Sign1 attestation report |
-| **6006** | `uint` | `attestation-type` | Attestation format (3 = AWS Nitro Enclaves) |
-| **6007** | `int` | `attestation-timestamp` | Unix epoch time in seconds (±5 min tolerance) |
-| **6011** | `text` | `sdk-version` | SDK version descriptor (e.g., `"veriai-sdk/1.0.0"`) |
-| **6012** | `bstr` | `enclave-pubkey` | Enclave ephemeral Ed25519 public key |
-
-*Claims 6008–6010 are reserved and must not appear in receipts.*
+A comprehensive security review of the platform is maintained in [security_review.md](security_review.md). This covers mitigation trackers for:
+- CBOR/COSE resource exhaustion protection.
+- Algorithm agility & header downgrade prevention (EdDSA alg validation).
+- Input concatenation ambiguity mitigations.
+- Ephemeral private key lifecycle.
 
 ---
 
 ## License
 
 This project is licensed under the Apache License 2.0. See the LICENSE file for details.
+
