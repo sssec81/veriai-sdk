@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use veriai_types::AttestationDoc;
 use veriai_types::error::AttestationError;
 
-// Embed mock certificates and private signing keys at compile time
+// Test certificates and the test signing key are kept with the repository fixtures.
 const MOCK_ROOT_PEM: &str = include_str!("../../../tests/fixtures/mock-aws-root.pem");
 const MOCK_INTERMEDIATE_PEM: &str =
     include_str!("../../../tests/fixtures/mock-aws-intermediate.pem");

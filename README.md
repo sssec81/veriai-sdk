@@ -1,17 +1,12 @@
-# VeriAI Platform 🛡️
+# VeriAI
 
 [![Rust](https://img.shields.io/badge/Rust-1.80%2B-blue)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-green)](LICENSE)
 [![CI Status](https://github.com/sssec81/veriai-sdk/workflows/CI/badge.svg)](https://github.com/sssec81/veriai-sdk/actions)
-[![Security Review](https://img.shields.io/badge/Security-Threat%20Reviewed-orange)](security_review.md)
 
-VeriAI is a Confidential AI Verification Platform and modular workspace. It generates and validates cryptographically signed receipts that bind model identity, input/output parameters, and secure hardware attestation (AWS Nitro Enclaves) to prove exactly what model was run, with what parameters, on what TEE hardware.
+VeriAI is a Rust workspace for creating and checking signed inference receipts. A receipt records hashes for the model, request, and response, and includes a hardware attestation document. The repository contains mock and AWS Nitro backends.
 
-> [!IMPORTANT]
-> **Deployment Configurations (Library vs. Proxy Mode)**
-> VeriAI operates in two distinct deployment configurations:
-> - **Library Mode (Low-friction default)**: The SDK is imported by the host application to generate attestation documents and hash I/O. **Warning**: This mode *does not* prevent a dishonest operator from passing fabricated input/output bytes to the SDK while executing a completely different model. Additionally, the model hash cache trusts local filesystem metadata (file size and modification time) rather than verifying content hashes dynamically. A local attacker with filesystem control could touch file metadata and swap model files without cache invalidation.
-> - **Proxy Mode (Secure)**: The VeriAI proxy runs as an intercepting proxy inside the secure AWS Nitro Enclave, directly managing inference I/O. Because the proxy binary is baked into the enclave's `PCR0`, clients can verify that the proxy itself is handling the data, shutting down operator-fabrication attacks. **Full protection is only achieved in Proxy Mode.**
+The SDK can only attest to the bytes it receives. In library mode, a caller could give it fabricated input or output while running a different model. A proxy inside the enclave is needed when the inference path itself must be covered by the attestation.
 
 ---
 
@@ -25,7 +20,7 @@ crates/
 ├── veriai-core        # Merkle Tree hashing, receipt building, and verification engines
 ├── veriai-attestation # Hardware Attestation provider trait and mock/real driver backends
 ├── veriai-runtime     # InferenceRuntime traits and modular LLM adapters (mock/llama.cpp)
-├── veriai-cli         # "veriai" CLI binary implementing inspect/verify checkmarks
+├── veriai-cli         # "veriai" CLI for inspecting and verifying receipts
 └── verifier-service   # Axum REST service exposing JSON checklist verify endpoints
 
 examples/
@@ -56,9 +51,9 @@ sequenceDiagram
 
 ---
 
-## Quick Start (Zero-Budget Simulation)
+## Local demo
 
-You can run a full E2E local enclave and completions server simulation directly on your local machine:
+The default demo uses the mock attestation provider, so it runs on a normal workstation:
 
 ### 1. Run local E2E simulation script
 ```bash
@@ -179,7 +174,7 @@ curl -s http://localhost:8080/v1/verify \
 
 ---
 
-## Build Configurations & Feature Flags
+## Build configurations
 
 VeriAI uses compile-time guards to prevent accidentally deploying mock hardware simulations to live environments:
 
@@ -187,16 +182,16 @@ VeriAI uses compile-time guards to prevent accidentally deploying mock hardware 
 - `real-hardware`: Configures the SDK to open `/dev/nsm` using the official `aws-nitro-enclaves-nsm-api` driver.
 
 ### Compiling for Production
-To build the production-ready SDK library for deployment inside an AWS Nitro Enclaves:
+To build the SDK for deployment inside an AWS Nitro Enclave:
 ```bash
 cargo build --release --no-default-features --features real-hardware
 ```
 
 ---
 
-## Operations & Hardening Configuration
+## Verifier limits
 
-The verifier supports strict panic-free validation constraints configured via `VerifierConfig`:
+The verifier applies size and time limits through `VerifierConfig`:
 
 ```rust
 pub struct VerifierConfig {
@@ -213,9 +208,9 @@ sequence state for the lifetime of the service process.
 
 ---
 
-## Threat Model & Security Review
+## Security notes
 
-A comprehensive security review of the platform is maintained in [security_review.md](security_review.md). This covers mitigation trackers for:
+[security_review.md](security_review.md) lists known risks and current follow-up work. It covers:
 - CBOR/COSE resource exhaustion protection.
 - Algorithm agility & header downgrade prevention (EdDSA alg validation).
 - Input concatenation ambiguity mitigations.

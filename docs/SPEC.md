@@ -1,8 +1,8 @@
-# VeriAI Technical Specification (v1.0)
+# VeriAI receipt format (v1)
 
-## 1. Security Models & The Golden Rule
+## 1. Security boundary
 
-VeriAI supports two distinct deployment modes. The core value proposition of VeriAI is verifiable inference, but the security guarantee differs materially between these modes:
+VeriAI supports two deployment modes. They provide different guarantees:
 
 ### 1.1 Library Mode (Default)
 In Library Mode, the SDK is imported by the host application. The host calls the SDK to hash inputs/outputs and retrieve attestation documents.
@@ -12,7 +12,7 @@ In Library Mode, the SDK is imported by the host application. The host calls the
 ### 1.2 Proxy Mode (Secure)
 In Proxy Mode, VeriAI runs as an intercepting proxy inside the secure AWS Nitro Enclave. All inference requests must pass through this proxy.
 * **Guarantee**: The proxy itself intercepts the model file (mmap), calculates the hash, catches the inputs, forwards them to the model, catches the outputs, and generates the attestation document with binding report data.
-* **Security Guard**: Because the proxy binary is included in the enclave's PCR0, the client can verify that the proxy is indeed running and managing the I/O. This is the **only** mode that provides full defense against operator fabrication.
+* **Security boundary**: Because the proxy binary is included in the enclave's PCR0, the client can verify that the proxy is running and managing the I/O. This is the mode to use when operator fabrication is in scope.
 
 ---
 
@@ -33,8 +33,7 @@ The receipt is a `COSE_Sign1` structure enclosing a CBOR Web Token (CWT) with th
 | **6011** | `text` | `sdk-version` | SDK version identifier (e.g., `"veriai-sdk/1.0.0"`) |
 | **6012** | `bstr .size 32` | `enclave-pubkey` | Public key of the enclave's ephemeral Ed25519 keypair |
 
-> [!WARNING]
-> Claims 6008, 6009, and 6010 are reserved. They must not appear in the claim set.
+Claims 6008, 6009, and 6010 are reserved and must not appear in the claim set.
 
 ---
 

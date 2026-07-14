@@ -1,8 +1,8 @@
-**Version:** 10.3
+**Version:** 10.3 (draft)
 
 **Date:** July 13, 2026
 
-**Status:** ⚠️ **Technically sound, ready for `cargo init`** — protocol decisions verified against AWS Nitro specifications; business case is an honest low-cost bet, not a validated market (see Section 9 and Scorecard)
+**Status:** Planning notes. The implementation is ahead of parts of this document; check the code and README for current behavior.
 
 ---
 
@@ -27,11 +27,11 @@
 
 ### 1.1 Vision
 
-To be the **vendor‑agnostic attestation library** for verifiable AI inference — a lightweight SDK that cryptographically proves *what* model was run, *on what* hardware, with *what* inputs and outputs, without platform lock‑in.
+Build a small, vendor-neutral attestation library for AI inference. The library records the model, inputs, outputs, and hardware evidence in a signed receipt.
 
 ### 1.2 Mission
 
-Build an open‑source, Rust‑based attestation SDK that generates cryptographically signed receipts binding model identity, hardware attestation (AWS Nitro), and input/output hashes. The SDK runs **inside the enclave** and, in its strongest deployment mode, acts as a **proxy** that intercepts the actual inference I/O – eliminating operator fabrication.
+Build an open-source Rust SDK that generates signed receipts binding model identity, AWS Nitro attestation, and input/output hashes. The SDK can run as a library or as a proxy inside an enclave.
 
 **Security model, stated plainly:** v1 ships two deployment modes with materially different guarantees. **Library mode** (the default, lowest-friction integration) lets an operator call the SDK to attest and hash whatever it's given — it does *not* stop a dishonest operator from feeding the SDK fabricated input/output bytes while running something else. **Proxy mode** (Section 8.1) is the only mode that actually closes that gap, because it intercepts the real I/O itself. Anywhere this PRD or its marketing says "cryptographic proof," that claim is only fully true in proxy mode. This distinction should be in the README's first paragraph, not buried in the risk table.
 

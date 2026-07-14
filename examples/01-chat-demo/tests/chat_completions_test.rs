@@ -11,7 +11,7 @@ use veriai_types::openai::{ChatCompletionResponse, InferenceRequest, Message};
 async fn test_openai_chat_completions_linkage() {
     let app = chat_demo::app();
 
-    // 1. Send chat completion request
+    // Send a chat completion request.
     let request_body = json!({
         "model": "veriai-llama",
         "messages": [
@@ -37,14 +37,14 @@ async fn test_openai_chat_completions_linkage() {
 
     assert_eq!(response.status(), StatusCode::OK);
 
-    // 2. Decode standard OpenAI completions JSON response
+    // Decode the OpenAI-compatible response.
     let body_bytes = axum::body::to_bytes(response.into_body(), 10 * 1024 * 1024)
         .await
         .unwrap();
     let chat_response: ChatCompletionResponse = serde_json::from_slice(&body_bytes)
         .expect("Failed to parse standard OpenAI completion response JSON");
 
-    // 3. Assert Choice & deterministic mock content
+    // The mock runtime returns one assistant choice.
     assert_eq!(chat_response.choices.len(), 1);
     let choice = &chat_response.choices[0];
     assert_eq!(choice.message.role, "assistant");

@@ -33,7 +33,7 @@ fn configured_provider() -> Arc<dyn AttestationProvider> {
 #[derive(Parser)]
 #[command(name = "veriai")]
 #[command(version = "0.1.0")]
-#[command(about = "VeriAI CLI tool for verifiable AI inference", long_about = None)]
+#[command(about = "Inspect and verify VeriAI receipts", long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
