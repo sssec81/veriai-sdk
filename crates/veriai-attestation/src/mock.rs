@@ -107,7 +107,8 @@ impl AttestationProvider for MockAttestationProvider {
         doc_bytes: &[u8],
         expected_root: &[u8],
     ) -> Result<bool, AttestationError> {
-        match crate::verify_attestation_doc(doc_bytes, expected_root, std::time::SystemTime::now()) {
+        match crate::verify_attestation_doc(doc_bytes, expected_root, std::time::SystemTime::now())
+        {
             Ok(_) => Ok(true),
             Err(_) => Ok(false),
         }

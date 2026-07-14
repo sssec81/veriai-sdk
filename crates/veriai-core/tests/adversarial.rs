@@ -1,14 +1,14 @@
+use base64ct::Encoding;
 use coset::{CborSerializable, CoseSign1};
+use p384::ecdsa::signature::Signer;
+use p384::pkcs8::DecodePrivateKey;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use veriai_attestation::mock::MockAttestationProvider;
-use veriai_attestation::{verify_attestation_doc, AttestationProvider};
+use veriai_attestation::{AttestationProvider, verify_attestation_doc};
 use veriai_core::receipt::ReceiptGenerator;
 use veriai_core::verify::Verifier;
-use veriai_types::{VeriClaims, AttestationDoc};
-use p384::pkcs8::DecodePrivateKey;
-use p384::ecdsa::signature::Signer;
-use base64ct::Encoding;
+use veriai_types::{AttestationDoc, VeriClaims};
 
 const MOCK_ROOT_PEM: &str = include_str!("../../../tests/fixtures/mock-aws-root.pem");
 

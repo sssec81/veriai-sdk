@@ -30,7 +30,11 @@ pub trait AttestationProvider: Send + Sync {
 }
 
 /// Helper to validate certificate validity period and CA constraint.
-fn validate_cert(cert: &Certificate, is_leaf: bool, now: SystemTime) -> Result<(), AttestationError> {
+fn validate_cert(
+    cert: &Certificate,
+    is_leaf: bool,
+    now: SystemTime,
+) -> Result<(), AttestationError> {
     let not_before = cert.tbs_certificate.validity.not_before.to_system_time();
     let not_after = cert.tbs_certificate.validity.not_after.to_system_time();
 
@@ -48,7 +52,9 @@ fn validate_cert(cert: &Certificate, is_leaf: bool, now: SystemTime) -> Result<(
         if let Some(ref ext_list) = cert.tbs_certificate.extensions {
             for ext in ext_list {
                 if ext.extn_id == BASIC_CONSTRAINTS_OID {
-                    if let Ok(bc) = x509_cert::ext::pkix::BasicConstraints::from_der(ext.extn_value.as_bytes()) {
+                    if let Ok(bc) =
+                        x509_cert::ext::pkix::BasicConstraints::from_der(ext.extn_value.as_bytes())
+                    {
                         is_ca = bc.ca;
                     }
                 }
@@ -104,10 +110,7 @@ pub fn verify_attestation_doc(
 
     let attestation_signature = p384::ecdsa::Signature::from_slice(&attestation_cose.signature)
         .map_err(|e| {
-            AttestationError::InvalidAttestationDocument(format!(
-                "Invalid signature bytes: {}",
-                e
-            ))
+            AttestationError::InvalidAttestationDocument(format!("Invalid signature bytes: {}", e))
         })?;
 
     let attestation_tbs = attestation_cose.tbs_data(&[]);
@@ -155,10 +158,7 @@ pub fn verify_attestation_doc(
 
         let current_sig_bytes = current_cert.signature.raw_bytes();
         let current_sig = p384::ecdsa::Signature::from_der(current_sig_bytes).map_err(|e| {
-            AttestationError::InvalidAttestationDocument(format!(
-                "Invalid signature DER: {}",
-                e
-            ))
+            AttestationError::InvalidAttestationDocument(format!("Invalid signature DER: {}", e))
         })?;
 
         parent_verifying_key
