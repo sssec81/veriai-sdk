@@ -16,4 +16,7 @@ pub enum RuntimeError {
 
     #[error("Feature not implemented: {0}")]
     NotImplemented(String),
+
+    #[error("Inference process failed: {0}")]
+    ProcessFailed(String),
 }

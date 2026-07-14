@@ -41,12 +41,14 @@ struct HealthResponse {
 
 #[derive(Serialize, Debug)]
 struct VersionResponse {
+    api_version: &'static str,
     version: &'static str,
     receipt_format: &'static str,
 }
 
 #[derive(Serialize, Debug)]
 struct ErrorResponse {
+    code: &'static str,
     error: String,
 }
 
@@ -77,6 +79,7 @@ async fn main() {
     let app = Router::new()
         .route("/health", get(health_handler))
         .route("/version", get(version_handler))
+        .route("/v1/verify", post(verify_handler))
         .route("/verify", post(verify_handler))
         .layer(TraceLayer::new_for_http())
         .layer(RequestBodyLimitLayer::new(MAX_REQUEST_BODY))
@@ -103,6 +106,7 @@ async fn health_handler() -> Json<HealthResponse> {
 
 async fn version_handler() -> Json<VersionResponse> {
     Json(VersionResponse {
+        api_version: "v1",
         version: env!("CARGO_PKG_VERSION"),
         receipt_format: "v1",
     })
@@ -124,6 +128,7 @@ async fn verify_handler(
             (
                 axum::http::StatusCode::BAD_REQUEST,
                 Json(ErrorResponse {
+                    code: "invalid_encoding",
                     error: format!("Invalid receipt encoding (must be hex or base64): {:?}", e),
                 }),
             )
@@ -135,6 +140,7 @@ async fn verify_handler(
         (
             axum::http::StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
+                code: "invalid_model_hash",
                 error: format!("Invalid model_hash: {}", e),
             }),
         )
@@ -144,6 +150,7 @@ async fn verify_handler(
         (
             axum::http::StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
+                code: "invalid_input_hash",
                 error: format!("Invalid input_hash: {}", e),
             }),
         )
@@ -153,6 +160,7 @@ async fn verify_handler(
         (
             axum::http::StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
+                code: "invalid_output_hash",
                 error: format!("Invalid output_hash: {}", e),
             }),
         )
@@ -162,6 +170,7 @@ async fn verify_handler(
         (
             axum::http::StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
+                code: "invalid_nonce",
                 error: format!("Invalid nonce: {}", e),
             }),
         )
@@ -186,6 +195,7 @@ async fn verify_handler(
             (
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
+                    code: "verification_error",
                     error: format!("Infrastructure error: {:?}", e),
                 }),
             )

@@ -13,6 +13,13 @@ pub struct InferenceRequest {
     pub temperature: Option<f32>,
 }
 
+impl InferenceRequest {
+    /// Stable JSON bytes used for receipt input binding.
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, serde_json::Error> {
+        serde_json::to_vec(self)
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct InferenceResult {
     pub content: String,

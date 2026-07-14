@@ -1558,6 +1558,7 @@ dependencies = [
  "async-trait",
  "serde",
  "thiserror",
+ "tokio",
  "veriai-types",
 ]
 

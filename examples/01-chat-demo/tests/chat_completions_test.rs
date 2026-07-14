@@ -5,7 +5,7 @@ use axum::{
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use tower::ServiceExt;
-use veriai_types::openai::ChatCompletionResponse;
+use veriai_types::openai::{ChatCompletionResponse, InferenceRequest, Message};
 
 #[tokio::test]
 async fn test_openai_chat_completions_linkage() {
@@ -62,7 +62,15 @@ async fn test_openai_chat_completions_linkage() {
     assert_eq!(proof.error, None);
 
     // 5. Assert Receipt linkage: verify prompt and response hash matches receipt
-    let expected_input_hash: [u8; 32] = Sha256::digest(b"hello veriai runtime").into();
+    let expected_input = InferenceRequest {
+        messages: vec![Message {
+            role: "user".to_string(),
+            content: "hello veriai runtime".to_string(),
+        }],
+        temperature: Some(0.7),
+    };
+    let expected_input_hash: [u8; 32] =
+        Sha256::digest(expected_input.canonical_bytes().unwrap()).into();
     let expected_output_hash: [u8; 32] = Sha256::digest(choice.message.content.as_bytes()).into();
 
     let receipt_info = proof

@@ -2,6 +2,8 @@ pub mod error;
 pub mod llama_cpp;
 pub mod mock;
 
+pub use llama_cpp::LlamaCppRuntime;
+
 use crate::error::RuntimeError;
 use async_trait::async_trait;
 use veriai_types::openai::{InferenceRequest, InferenceResult, RuntimeMetadata};
