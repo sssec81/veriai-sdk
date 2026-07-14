@@ -1,4 +1,9 @@
-use axum::{Json, Router, extract::State, http::StatusCode, routing::post};
+use axum::{
+    Json, Router,
+    extract::{State, rejection::JsonRejection},
+    http::{HeaderMap, StatusCode},
+    routing::post,
+};
 use rand_core::{OsRng, RngCore};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -44,6 +49,7 @@ pub fn app() -> Router {
     let state = build_state().unwrap_or_else(|error| panic!("failed to initialize demo: {error}"));
     Router::new()
         .route("/v1/chat/completions", post(chat_completions_handler))
+        .route("/proxy/v1/chat/completions", post(chat_completions_handler))
         .with_state(state)
 }
 
@@ -151,8 +157,11 @@ fn configured_provider() -> Arc<dyn AttestationProvider> {
 
 async fn chat_completions_handler(
     State(state): State<AppState>,
-    Json(payload): Json<ChatCompletionRequest>,
+    headers: HeaderMap,
+    payload: Result<Json<ChatCompletionRequest>, JsonRejection>,
 ) -> Result<Json<ChatCompletionResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let Json(payload) = payload
+        .map_err(|error| api_error(StatusCode::BAD_REQUEST, "invalid_json", error.body_text()))?;
     if payload.model.trim().is_empty() || payload.messages.is_empty() {
         return Err(api_error(
             StatusCode::BAD_REQUEST,
@@ -186,8 +195,7 @@ async fn chat_completions_handler(
 
     let input_hash: [u8; 32] = Sha256::digest(&canonical_input).into();
     let output_hash: [u8; 32] = Sha256::digest(inference_result.content.as_bytes()).into();
-    let mut client_nonce = [0u8; 32];
-    OsRng.fill_bytes(&mut client_nonce);
+    let client_nonce = request_nonce(&headers)?;
 
     let receipt_bytes = state
         .generator
@@ -246,6 +254,36 @@ async fn chat_completions_handler(
         },
         verification: Some(verify_result),
     }))
+}
+
+fn request_nonce(headers: &HeaderMap) -> Result<[u8; 32], (StatusCode, Json<ErrorResponse>)> {
+    let Some(value) = headers.get("x-veriai-nonce") else {
+        let mut nonce = [0u8; 32];
+        OsRng.fill_bytes(&mut nonce);
+        return Ok(nonce);
+    };
+
+    let value = value.to_str().map_err(|_| {
+        api_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_nonce",
+            "X-VeriAI-Nonce must contain 64 hexadecimal characters",
+        )
+    })?;
+    let bytes = hex::decode(value).map_err(|_| {
+        api_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_nonce",
+            "X-VeriAI-Nonce must contain 64 hexadecimal characters",
+        )
+    })?;
+    bytes.try_into().map_err(|_| {
+        api_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_nonce",
+            "X-VeriAI-Nonce must contain 64 hexadecimal characters",
+        )
+    })
 }
 
 fn api_error(

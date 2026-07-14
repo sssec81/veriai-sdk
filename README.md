@@ -134,6 +134,25 @@ while attestation is provided by the mock provider:
 }
 ```
 
+The same handler is available at `/proxy/v1/chat/completions` for the local
+proxy-mode example. The server owns the runtime call and receipt creation; the
+caller does not provide model or output hashes. To bind a caller challenge into
+the receipt, send a 32-byte nonce as 64 hexadecimal characters:
+
+```bash
+curl -s http://localhost:3000/proxy/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "X-VeriAI-Nonce: 1111111111111111111111111111111111111111111111111111111111111111" \
+  -d '{
+    "model": "veriai-llama",
+    "messages": [{"role": "user", "content": "Say hello"}]
+  }' | jq
+```
+
+This local endpoint demonstrates the proxy boundary and uses mock attestation
+by default. It is not an AWS Nitro deployment; the enclave and PCR0 boundary
+still need to be validated on AWS.
+
 The chat demo is explicitly mock hardware by default. For a real inference
 adapter, install a pinned `llama-cli` binary and run the demo with:
 

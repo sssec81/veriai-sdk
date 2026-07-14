@@ -81,3 +81,57 @@ async fn test_openai_chat_completions_linkage() {
     assert_eq!(receipt_info.input_hash, hex::encode(expected_input_hash));
     assert_eq!(receipt_info.output_hash, hex::encode(expected_output_hash));
 }
+
+#[tokio::test]
+async fn test_proxy_endpoint_accepts_client_nonce() {
+    let app = chat_demo::app();
+    let request_body = json!({
+        "model": "veriai-llama",
+        "messages": [{"role": "user", "content": "proxy request"}]
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/proxy/v1/chat/completions")
+                .header("content-type", "application/json")
+                .header("x-veriai-nonce", "11".repeat(32))
+                .body(Body::from(serde_json::to_vec(&request_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body_bytes = axum::body::to_bytes(response.into_body(), 10 * 1024 * 1024)
+        .await
+        .unwrap();
+    let chat_response: ChatCompletionResponse = serde_json::from_slice(&body_bytes).unwrap();
+    assert!(chat_response.verification.unwrap().valid);
+}
+
+#[tokio::test]
+async fn test_proxy_endpoint_rejects_invalid_nonce() {
+    let app = chat_demo::app();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/proxy/v1/chat/completions")
+                .header("content-type", "application/json")
+                .header("x-veriai-nonce", "not-hex")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "model": "veriai-llama",
+                        "messages": [{"role": "user", "content": "proxy request"}]
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
