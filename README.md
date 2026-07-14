@@ -157,6 +157,11 @@ pub struct VerifierConfig {
 }
 ```
 
+The verifier service reads trust configuration at startup rather than accepting it
+from clients. Set `TRUSTED_ROOT_CERT_PATH` (or `TRUSTED_ROOT_CERT_PEM`) and
+`EXPECTED_PCR0` (96 hex characters). Set `STATEFUL_VERIFICATION=true` to keep
+sequence state for the lifetime of the service process.
+
 ---
 
 ## Threat Model & Security Review
@@ -172,4 +177,3 @@ A comprehensive security review of the platform is maintained in [security_revie
 ## License
 
 This project is licensed under the Apache License 2.0. See the LICENSE file for details.
-

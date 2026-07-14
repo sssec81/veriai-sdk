@@ -228,6 +228,22 @@ impl Verifier {
             }
         };
 
+        if claims.attestation_type != 3 {
+            add_check!(
+                "Attestation Type",
+                "failed",
+                Some(format!(
+                    "Expected Nitro attestation type 3, got {}",
+                    claims.attestation_type
+                ))
+            );
+            return Ok(fail_result!(
+                VerifyError::UnsupportedAttestationType,
+                checks
+            ));
+        }
+        add_check!("Attestation Type", "passed", None);
+
         // Check 2: Verify Receipt Signature (Ed25519)
         let receipt_sig_verified = match VerifyingKey::from_bytes(&claims.enclave_pubkey) {
             Ok(key) => {

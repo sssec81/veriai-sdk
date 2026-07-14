@@ -1,26 +1,36 @@
 use axum::{
     Json, Router,
+    extract::State,
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tower_http::trace::TraceLayer;
+use tower_http::{limit::RequestBodyLimitLayer, trace::TraceLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use veriai_attestation::AttestationProvider;
+#[cfg(feature = "mock-hardware")]
 use veriai_attestation::mock::MockAttestationProvider;
+#[cfg(feature = "real-hardware")]
+use veriai_attestation::nitro::NitroAttestationProvider;
 use veriai_core::verify::Verifier;
 use veriai_types::VerificationResult;
 
+const MAX_REQUEST_BODY: usize = 128 * 1024;
+
+#[derive(Clone)]
+struct AppState {
+    expected_pcr0: Arc<[u8]>,
+    verifier: Arc<Verifier>,
+}
+
 #[derive(Deserialize, Debug)]
 struct VerifyRequest {
-    receipt: String,        // Base64 or Hex encoded receipt bytes
-    model_hash: String,     // Hex encoded model hash
-    input_hash: String,     // Hex encoded input hash
-    output_hash: String,    // Hex encoded output hash
-    nonce: String,          // Hex encoded client nonce
-    expected_pcr0: String,  // Hex encoded expected PCR0
-    root_cert: String,      // Trusted Root CA PEM
-    stateful: Option<bool>, // Enable sequence monotonicity check
+    receipt: String,     // Base64 or Hex encoded receipt bytes
+    model_hash: String,  // Hex encoded model hash
+    input_hash: String,  // Hex encoded input hash
+    output_hash: String, // Hex encoded output hash
+    nonce: String,       // Hex encoded client nonce
 }
 
 #[derive(Serialize, Debug)]
@@ -50,11 +60,27 @@ async fn main() {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
+    let trusted_root_pem = load_trusted_root()
+        .unwrap_or_else(|e| panic!("Trusted root configuration is invalid: {e}"));
+    let expected_pcr0 = load_expected_pcr0()
+        .unwrap_or_else(|e| panic!("Expected PCR0 configuration is invalid: {e}"));
+    let stateful = std::env::var("STATEFUL_VERIFICATION")
+        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    let verifier = Verifier::from_pem(configured_provider(), &trusted_root_pem, stateful)
+        .unwrap_or_else(|e| panic!("Trusted root configuration is invalid: {e}"));
+    let state = AppState {
+        expected_pcr0: Arc::from(expected_pcr0),
+        verifier: Arc::new(verifier),
+    };
+
     let app = Router::new()
         .route("/health", get(health_handler))
         .route("/version", get(version_handler))
         .route("/verify", post(verify_handler))
-        .layer(TraceLayer::new_for_http());
+        .layer(TraceLayer::new_for_http())
+        .layer(RequestBodyLimitLayer::new(MAX_REQUEST_BODY))
+        .with_state(state);
 
     let port = std::env::var("PORT")
         .unwrap_or_else(|_| "8080".to_string())
@@ -83,6 +109,7 @@ async fn version_handler() -> Json<VersionResponse> {
 }
 
 async fn verify_handler(
+    State(state): State<AppState>,
     Json(payload): Json<VerifyRequest>,
 ) -> Result<Json<VerificationResult>, (axum::http::StatusCode, Json<ErrorResponse>)> {
     tracing::info!("Received verify request");
@@ -140,36 +167,15 @@ async fn verify_handler(
         )
     })?;
 
-    let expected_pcr0 = hex::decode(&payload.expected_pcr0).map_err(|e| {
-        (
-            axum::http::StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: format!("Invalid expected_pcr0 hex: {:?}", e),
-            }),
-        )
-    })?;
-
-    let provider = Arc::new(MockAttestationProvider::new());
-    let stateful = payload.stateful.unwrap_or(false);
-
-    let verifier = Verifier::from_pem(provider, &payload.root_cert, stateful).map_err(|e| {
-        tracing::warn!("Invalid root certificate PEM: {}", e);
-        (
-            axum::http::StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: format!("Invalid root_cert: {}", e),
-            }),
-        )
-    })?;
-
-    let result = verifier
+    let result = state
+        .verifier
         .verify(
             &receipt_bytes,
             model_hash,
             input_hash,
             output_hash,
             nonce,
-            &expected_pcr0,
+            &state.expected_pcr0,
         )
         .await
         .map_err(|e| {
@@ -187,6 +193,38 @@ async fn verify_handler(
 
     tracing::info!("Verification completed. Valid: {}", result.valid);
     Ok(Json(result))
+}
+
+fn configured_provider() -> Arc<dyn AttestationProvider> {
+    #[cfg(feature = "real-hardware")]
+    {
+        Arc::new(NitroAttestationProvider::new())
+    }
+    #[cfg(all(feature = "mock-hardware", not(feature = "real-hardware")))]
+    {
+        Arc::new(MockAttestationProvider::new())
+    }
+}
+
+fn load_trusted_root() -> Result<String, String> {
+    if let Ok(pem) = std::env::var("TRUSTED_ROOT_CERT_PEM")
+        && pem.contains("BEGIN CERTIFICATE")
+    {
+        return Ok(pem);
+    }
+    let path = std::env::var("TRUSTED_ROOT_CERT_PATH")
+        .map_err(|_| "set TRUSTED_ROOT_CERT_PEM or TRUSTED_ROOT_CERT_PATH".to_string())?;
+    std::fs::read_to_string(path).map_err(|e| format!("failed to read trusted root: {e}"))
+}
+
+fn load_expected_pcr0() -> Result<Vec<u8>, String> {
+    let value = std::env::var("EXPECTED_PCR0")
+        .map_err(|_| "set EXPECTED_PCR0 to the 48-byte PCR0 hex value".to_string())?;
+    let pcr0 = hex::decode(value).map_err(|e| format!("PCR0 is not valid hex: {e}"))?;
+    if pcr0.len() != 48 {
+        return Err(format!("PCR0 must be 48 bytes, got {}", pcr0.len()));
+    }
+    Ok(pcr0)
 }
 
 fn decode_hex_32(s: &str) -> Result<[u8; 32], String> {

@@ -65,6 +65,9 @@ pub enum VerifyError {
     #[error("COSE protected header specifies an unsupported signature algorithm")]
     UnsupportedAlgorithm,
 
+    #[error("Unsupported attestation type")]
+    UnsupportedAttestationType,
+
     #[error("COSE protected header is missing or invalid")]
     InvalidProtectedHeader,
 

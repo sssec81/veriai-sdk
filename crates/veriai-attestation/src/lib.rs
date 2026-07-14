@@ -1,3 +1,4 @@
+#[cfg(feature = "mock-hardware")]
 pub mod mock;
 
 #[cfg(all(feature = "mock-hardware", not(any(test, debug_assertions))))]
@@ -80,6 +81,20 @@ pub fn verify_attestation_doc(
 ) -> Result<AttestationDoc, AttestationError> {
     let attestation_cose = CoseSign1::from_slice(doc_bytes)
         .map_err(|e| AttestationError::InvalidAttestationDocument(e.to_string()))?;
+
+    match attestation_cose.protected.header.alg.as_ref() {
+        Some(coset::Algorithm::Assigned(coset::iana::Algorithm::ES384)) => {}
+        _ => {
+            return Err(AttestationError::InvalidAttestationDocument(
+                "Attestation COSE protected header must declare ES384".to_string(),
+            ));
+        }
+    }
+    if attestation_cose.unprotected.alg.is_some() {
+        return Err(AttestationError::InvalidAttestationDocument(
+            "Attestation COSE algorithm must not be in the unprotected header".to_string(),
+        ));
+    }
 
     let attestation_payload = attestation_cose.payload.as_ref().ok_or_else(|| {
         AttestationError::InvalidAttestationDocument("Missing payload".to_string())
