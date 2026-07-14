@@ -23,6 +23,9 @@ This document registers a professional threat assessment and code-level audit of
 | **SEC-12** | Nonce Entropy Validation | 🟠 High | Low-entropy/predictable nonces enabling replay | **Recommended** (enforce minimum 128-bit CSPRNG nonces) |
 | **SEC-13** | Memory Leakage & Exposure | 🟡 Medium | Key leak through core dumps, debugging, or swap | **Recommended** (use `mlock` and disable core dumps) |
 | **SEC-14** | Dependency Supply Chain | 🟡 Medium | Upstream library security vulnerabilities | **Recommended** (integrate cargo audit, deny, and vet in CI) |
+| **SEC-15** | Merkle Tree Odd-Node Duplication | 🟡 Medium | Hash collision vulnerabilities during inclusion proofs | **Recommended** (promote rather than duplicate odd nodes) |
+| **SEC-16** | Model Hash Cache Metadata Trust | 🟡 Medium | Swapped-out model files via touched file metadata | **Recommended** (validate content hash, not just mtime/size) |
+| **SEC-17** | Weak Trusted Roots Verification Path | 🟢 Low | Defense-in-depth bypass if mixed roots list provided | **Recommended** (sanitize or require validation of all certs) |
 
 ---
 
@@ -40,9 +43,10 @@ This document registers a professional threat assessment and code-level audit of
 ### 2.2 Certificate Validation Completeness (SEC-01, SEC-07, SEC-08)
 - **Problem**: Signature chain verification validates keys but misses temporal constraints (validity period), key usages, and CA rotations.
 - **Mitigations**:
-  1. **Temporal Chain Check**: Validate the `validity` window on leaf cert and all intermediate certs in the chain against system clock.
-  2. **Key Usage & EKU**: Verify `BasicConstraints`, `KeyUsage`, and `ExtendedKeyUsage` properties.
-  3. **Fingerprint Set CA Pinning**: Avoid automated root expansion; verify root certificate fingerprints against an embedded trusted CA set.
+  1. **Temporal Chain Check**: Validate the `validity` window (NotBefore / NotAfter) on the leaf cert and all intermediate certs in the chain against system clock.
+  2. **Key Usage & EKU**: Verify `BasicConstraints` (checking `CA:true`), `KeyUsage`, and `ExtendedKeyUsage` properties.
+  3. **CA Bundle Ordering**: Ensure that the chain validation walks the expected ordering (root-first vs leaf-first) as returned by AWS Nitro Enclaves to avoid verification bypasses.
+  4. **Fingerprint Set CA Pinning**: Avoid automated root expansion; verify root certificate fingerprints against an embedded trusted CA set.
 
 ### 2.3 REPORTDATA Input Ambiguity Protection (SEC-09)
 - **Problem**: Concatenating variables `version || domain || key` can result in input ambiguity where different configurations serialize to the identical byte stream.
@@ -67,6 +71,18 @@ This document registers a professional threat assessment and code-level audit of
 - **Problem**: Downgrade attacks or ignoring critical headers could bypass verification constraints.
 - **Mitigation**: Validate the `alg` identifier in protected headers, reject unprotected `alg` declarations, and fail on any unknown critical (`crit`) header elements.
 
+### 2.7 Merkle Tree Duplicate Node Protection (SEC-15)
+- **Problem**: The current Merkle Tree implementation duplicates odd nodes (`hashing.rs`), replicating the Bitcoin CVE-2012-2459 vulnerability. If inclusion proofs are introduced later, this creates collision vectors.
+- **Mitigation**: Promote the odd node directly up the tree level instead of duplicating.
+
+### 2.8 Cache Hijack Protection (SEC-16)
+- **Problem**: Model-hash caching relies on file `mtime` and size, allowing attackers to touch file metadata and swap model files without cache invalidation.
+- **Mitigation**: Add a content hashing validation step or explicitly restrict cache scope.
+
+### 2.9 Trusted Roots Validation Loop (SEC-17)
+- **Problem**: Loop over `trusted_roots` breaks on the first validating root, leaving defense-in-depth security entirely up to the caller to maintain a clean root set.
+- **Mitigation**: Sanitize or validate all root CA certificate properties beforehand.
+
 ---
 
 ## 3. Workspace Panic Safety Scan
@@ -89,3 +105,4 @@ To transition this security review to a verified audit standard, the following t
 2. **Chain Validity Suite**: Tests verifying rejection of expired intermediate/leaf certs and algorithm swaps.
 3. **Replay Validation Suite**: Tests evaluating horizontal replay attacks and restart resets.
 4. **Binding Integrations**: Asserting rejection of tampered `REPORTDATA` and incorrect `PCR0` measurements.
+
