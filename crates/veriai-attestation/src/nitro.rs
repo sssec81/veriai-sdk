@@ -2,12 +2,7 @@ use crate::AttestationProvider;
 use async_trait::async_trait;
 use aws_nitro_enclaves_nsm_api::api::{Request, Response};
 use aws_nitro_enclaves_nsm_api::driver::{nsm_exit, nsm_init, nsm_process_request};
-use coset::{CborSerializable, CoseSign1};
-use p384::ecdsa::{VerifyingKey, signature::Verifier};
-use veriai_types::AttestationDoc;
 use veriai_types::error::AttestationError;
-use x509_cert::Certificate;
-use x509_cert::der::{Decode, Encode};
 
 pub struct NitroAttestationProvider;
 
