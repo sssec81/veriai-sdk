@@ -6,11 +6,29 @@ use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::PathBuf;
 use std::sync::Arc;
+use veriai_attestation::AttestationProvider;
+#[cfg(feature = "mock-hardware")]
 use veriai_attestation::mock::MockAttestationProvider;
+#[cfg(feature = "real-hardware")]
+use veriai_attestation::nitro::NitroAttestationProvider;
 use veriai_core::hashing::compute_model_hash;
 use veriai_core::receipt::ReceiptGenerator;
 use veriai_core::verify::Verifier;
 use veriai_types::VeriClaims;
+
+#[cfg(not(any(feature = "mock-hardware", feature = "real-hardware")))]
+compile_error!("Enable either 'mock-hardware' or 'real-hardware' for veriai-cli");
+
+fn configured_provider() -> Arc<dyn AttestationProvider> {
+    #[cfg(feature = "real-hardware")]
+    {
+        Arc::new(NitroAttestationProvider::new())
+    }
+    #[cfg(all(feature = "mock-hardware", not(feature = "real-hardware")))]
+    {
+        Arc::new(MockAttestationProvider::new())
+    }
+}
 
 #[derive(Parser)]
 #[command(name = "veriai")]
@@ -115,8 +133,7 @@ fn parse_hex_any(s: &str) -> Result<Vec<u8>, String> {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
-    // Use MockAttestationProvider for CLI (or Nitro depending on compile flags)
-    let provider = Arc::new(MockAttestationProvider::new());
+    let provider = configured_provider();
 
     match cli.command {
         Commands::Inspect { receipt } => {
