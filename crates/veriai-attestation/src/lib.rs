@@ -52,9 +52,9 @@ fn validate_cert(
         if let Some(ref ext_list) = cert.tbs_certificate.extensions {
             for ext in ext_list {
                 if ext.extn_id == BASIC_CONSTRAINTS_OID {
-                    if let Ok(bc) =
-                        x509_cert::ext::pkix::BasicConstraints::from_der(ext.extn_value.as_bytes())
-                    {
+                    let bc_res =
+                        x509_cert::ext::pkix::BasicConstraints::from_der(ext.extn_value.as_bytes());
+                    if let Ok(bc) = bc_res {
                         is_ca = bc.ca;
                     }
                 }
