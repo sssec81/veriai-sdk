@@ -18,6 +18,11 @@ struct CacheEntry {
 
 /// Computes the SHA-256 Merkle root of a file using 4MB chunks.
 /// Uses an on-disk cache located in the system temporary directory to avoid re-hashing large files if they haven't changed.
+///
+/// # Security Note
+/// The cache validates entries against file size + modified time (mtime) only, not content.
+/// This is safe only under the Library Mode threat model (disclaimed in the README). A filesystem-level
+/// attacker could preserve the mtime/size while swapping the model file content.
 pub fn compute_model_hash<P: AsRef<Path>>(path: P) -> io::Result<[u8; 32]> {
     let path = path.as_ref();
     let metadata = std::fs::metadata(path)?;
@@ -59,6 +64,13 @@ pub fn compute_model_hash<P: AsRef<Path>>(path: P) -> io::Result<[u8; 32]> {
     Ok(root)
 }
 
+/// Computes the SHA-256 Merkle root of a file using 4MB chunks.
+///
+/// # Security Note
+/// This function duplicates the last node when the leaf count is odd (the same pattern
+/// as Bitcoin CVE-2012-2459). Since this hash is only used as a single root identifier
+/// and inclusion proofs are not exposed, this is low severity. Do NOT build an inclusion-proof
+/// feature on top of this function without updating the tree construction to avoid duplicate node collisions.
 fn hash_file_merkle(path: &Path) -> io::Result<[u8; 32]> {
     let mut file = File::open(path)?;
     let mut buffer = vec![0u8; CHUNK_SIZE];

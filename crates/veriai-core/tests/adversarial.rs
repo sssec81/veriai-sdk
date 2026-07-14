@@ -1,9 +1,14 @@
 use coset::{CborSerializable, CoseSign1};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use veriai_attestation::mock::MockAttestationProvider;
+use veriai_attestation::{verify_attestation_doc, AttestationProvider};
 use veriai_core::receipt::ReceiptGenerator;
 use veriai_core::verify::Verifier;
-use veriai_types::VeriClaims;
+use veriai_types::{VeriClaims, AttestationDoc};
+use p384::pkcs8::DecodePrivateKey;
+use p384::ecdsa::signature::Signer;
+use base64ct::Encoding;
 
 const MOCK_ROOT_PEM: &str = include_str!("../../../tests/fixtures/mock-aws-root.pem");
 
@@ -403,4 +408,114 @@ async fn test_adversarial_algorithm_agility_downgrade() {
         res2,
         Err(veriai_types::error::VerifyError::UnsupportedAlgorithm)
     ));
+}
+
+#[tokio::test]
+async fn test_adversarial_expired_cert_chain() {
+    let provider = MockAttestationProvider::new();
+    let attestation_doc_bytes = provider.generate(None, None, None).await.unwrap();
+    let root_pem = include_str!("../../../tests/fixtures/mock-aws-root.pem");
+    let mut root_base64 = String::new();
+    for line in root_pem.lines() {
+        if line.starts_with("-----") {
+            continue;
+        }
+        root_base64.push_str(line.trim());
+    }
+    let root_der = base64ct::Base64::decode_vec(&root_base64).unwrap();
+
+    // Fixtures are valid from 2026 to 2036. Test with a time in 2040.
+    let far_future = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(2208988800); // ~2040
+    let res = verify_attestation_doc(&attestation_doc_bytes, &root_der, far_future);
+    assert!(res.is_err());
+    assert!(format!("{:?}", res).contains("outside its validity period"));
+}
+
+#[tokio::test]
+async fn test_adversarial_not_yet_valid_cert_chain() {
+    let provider = MockAttestationProvider::new();
+    let attestation_doc_bytes = provider.generate(None, None, None).await.unwrap();
+    let root_pem = include_str!("../../../tests/fixtures/mock-aws-root.pem");
+    let mut root_base64 = String::new();
+    for line in root_pem.lines() {
+        if line.starts_with("-----") {
+            continue;
+        }
+        root_base64.push_str(line.trim());
+    }
+    let root_der = base64ct::Base64::decode_vec(&root_base64).unwrap();
+
+    // Fixtures are valid from 2026 to 2036. Test with a time in 2020.
+    let past = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1577836800); // ~2020
+    let res = verify_attestation_doc(&attestation_doc_bytes, &root_der, past);
+    assert!(res.is_err());
+    assert!(format!("{:?}", res).contains("outside its validity period"));
+}
+
+#[tokio::test]
+async fn test_adversarial_non_ca_intermediate() {
+    let leaf_pem = include_str!("../../../tests/fixtures/mock-aws-leaf.pem");
+    let root_pem = include_str!("../../../tests/fixtures/mock-aws-root.pem");
+
+    let mut leaf_base64 = String::new();
+    for line in leaf_pem.lines() {
+        if line.starts_with("-----") {
+            continue;
+        }
+        leaf_base64.push_str(line.trim());
+    }
+    let leaf_der = base64ct::Base64::decode_vec(&leaf_base64).unwrap();
+
+    let mut root_base64 = String::new();
+    for line in root_pem.lines() {
+        if line.starts_with("-----") {
+            continue;
+        }
+        root_base64.push_str(line.trim());
+    }
+    let root_der = base64ct::Base64::decode_vec(&root_base64).unwrap();
+
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+
+    let mut pcrs = std::collections::BTreeMap::new();
+    pcrs.insert(0, vec![0u8; 48]);
+
+    // Construct AttestationDoc placing leaf_der (which has CA:false) in the cabundle
+    let doc = AttestationDoc {
+        module_id: "Mock-Hypervisor-Module".to_string(),
+        timestamp: now_ms,
+        digest: "SHA384".to_string(),
+        pcrs,
+        certificate: leaf_der.clone(),
+        cabundle: vec![leaf_der.clone(), root_der.clone()],
+        public_key: None,
+        user_data: None,
+        nonce: None,
+    };
+
+    let payload = doc.to_binary().unwrap();
+
+    let protected = coset::HeaderBuilder::new()
+        .algorithm(coset::iana::Algorithm::ES384)
+        .build();
+
+    let mut cose_sign1 = coset::CoseSign1Builder::new()
+        .protected(protected)
+        .payload(payload)
+        .build();
+
+    let leaf_key_pem = include_str!("../../../tests/fixtures/mock-aws-leaf.key.pem");
+    let signing_key = p384::ecdsa::SigningKey::from_pkcs8_pem(leaf_key_pem).unwrap();
+    let tbs = cose_sign1.tbs_data(&[]);
+    let signature: p384::ecdsa::Signature = signing_key.sign(&tbs);
+    cose_sign1.signature = signature.to_bytes().to_vec();
+
+    let attestation_doc_bytes = cose_sign1.to_vec().unwrap();
+
+    let res = verify_attestation_doc(&attestation_doc_bytes, &root_der, SystemTime::now());
+    assert!(res.is_err());
+    assert!(format!("{:?}", res).contains("lacks CA:true constraint"));
 }

@@ -8,14 +8,14 @@ This document registers a professional threat assessment and code-level audit of
 
 | ID | Title | Severity | Impact | Mitigation Status |
 | :--- | :--- | :---: | :--- | :--- |
-| **SEC-01** | Missing Certificate Validity Checks | 🟠 High | Expired leaf or intermediate certs accepted | **Recommended** (verify validity across entire chain) |
+| **SEC-01** | Missing Certificate Validity Checks | 🟠 High | Expired leaf or intermediate certs accepted | **Mitigated** (checks validity period across entire chain) |
 | **SEC-02A**| Verifier State Replay (Reset/Scale) | 🔴 Critical | Sequence bypass on verifier restart or horizontal scaling | **Recommended** (persistent Redis or stateless nonces) |
 | **SEC-02B**| Attestation Receipt Replay | 🔴 Critical | Valid old receipts accepted forever | **Recommended** (enforce MAX_RECEIPT_AGE thresholds) |
 | **SEC-03** | Enclave Private Key Lifecycle Protection | 🔴 Critical | Key theft if written to disk or cloned in memory | **Recommended** (use `Zeroizing` and avoid cloning keys) |
 | **SEC-04** | Resource Exhaustion (OOM) via CBOR/COSE | 🟠 High | Denial of Service (DoS) via malicious large files | **Recommended** (enforce configurable size limits, return `Err`) |
 | **SEC-05** | Cache Poisoning / Symlink Attacks | 🟠 High | Privilege escalation / file overwrite / write corruption | **Recommended** (atomic writes, strict permissions, no-follow) |
 | **SEC-06** | Algorithm Agility Attacks | 🟠 High | Downgrade to `none` or weaker sigs / ignored headers | **Recommended** (check protected header, reject unknown crit) |
-| **SEC-07** | Certificate Extension Validation | 🟠 High | Impersonation using client auth certs | **Recommended** (validate EKU, SAN, and BasicConstraints) |
+| **SEC-07** | Certificate Extension Validation | 🟠 High | Impersonation using client auth certs | **Mitigated** (validates basicConstraints CA:true check on intermediate certs) |
 | **SEC-08** | Root Certificate Pinning Brittleness | 🟠 High | Service breakdown on AWS Root CA rotations | **Recommended** (support controlled embedded CA fingerprint sets) |
 | **SEC-09** | Input Ambiguity in Key Binding | 🟠 High | Concatenation prefix collision attacks | **Recommended** (hash structured CBOR arrays instead of concat) |
 | **SEC-10** | Release Build Mock Mode Drift | 🟠 High | Shipping mock hardware backend to production | **Recommended** (compile_error check outside of tests) |
@@ -23,9 +23,9 @@ This document registers a professional threat assessment and code-level audit of
 | **SEC-12** | Nonce Entropy Validation | 🟠 High | Low-entropy/predictable nonces enabling replay | **Recommended** (enforce minimum 128-bit CSPRNG nonces) |
 | **SEC-13** | Memory Leakage & Exposure | 🟡 Medium | Key leak through core dumps, debugging, or swap | **Recommended** (use `mlock` and disable core dumps) |
 | **SEC-14** | Dependency Supply Chain | 🟡 Medium | Upstream library security vulnerabilities | **Recommended** (integrate cargo audit, deny, and vet in CI) |
-| **SEC-15** | Merkle Tree Odd-Node Duplication | 🟡 Medium | Hash collision vulnerabilities during inclusion proofs | **Recommended** (promote rather than duplicate odd nodes) |
-| **SEC-16** | Model Hash Cache Metadata Trust | 🟡 Medium | Swapped-out model files via touched file metadata | **Recommended** (validate content hash, not just mtime/size) |
-| **SEC-17** | Weak Trusted Roots Verification Path | 🟢 Low | Defense-in-depth bypass if mixed roots list provided | **Recommended** (sanitize or require validation of all certs) |
+| **SEC-15** | Merkle Tree Odd-Node Duplication | 🟡 Medium | Hash collision vulnerabilities during inclusion proofs | **Documented** (added warning comment to `hash_file_merkle` against building inclusion proofs) |
+| **SEC-16** | Model Hash Cache Metadata Trust | 🟡 Medium | Swapped-out model files via touched file metadata | **Documented** (added security note in README & doc comments warning of metadata trust vulnerability) |
+| **SEC-17** | Weak Trusted Roots Verification Path | 🟢 Low | Defense-in-depth bypass if mixed roots list provided | **Documented** (added warning comment to `Verifier` constructors clarifying root population responsibility) |
 
 ---
 
@@ -43,10 +43,10 @@ This document registers a professional threat assessment and code-level audit of
 ### 2.2 Certificate Validation Completeness (SEC-01, SEC-07, SEC-08)
 - **Problem**: Signature chain verification validates keys but misses temporal constraints (validity period), key usages, and CA rotations.
 - **Mitigations**:
-  1. **Temporal Chain Check**: Validate the `validity` window (NotBefore / NotAfter) on the leaf cert and all intermediate certs in the chain against system clock.
-  2. **Key Usage & EKU**: Verify `BasicConstraints` (checking `CA:true`), `KeyUsage`, and `ExtendedKeyUsage` properties.
-  3. **CA Bundle Ordering**: Ensure that the chain validation walks the expected ordering (root-first vs leaf-first) as returned by AWS Nitro Enclaves to avoid verification bypasses.
-  4. **Fingerprint Set CA Pinning**: Avoid automated root expansion; verify root certificate fingerprints against an embedded trusted CA set.
+  1. **Temporal Chain Check**: Validate the `validity` window (NotBefore / NotAfter) on the leaf cert and all intermediate certs in the chain against system clock. **[Implemented & Verified]**
+  2. **Key Usage & EKU**: Verify `BasicConstraints` (checking `CA:true`), `KeyUsage`, and `ExtendedKeyUsage` properties. **[BasicConstraints CA:true Implemented & Verified]**
+  3. **CA Bundle Ordering**: Ensure that the chain validation walks the expected ordering (root-first vs leaf-first) as returned by AWS Nitro Enclaves to avoid verification bypasses. **[Documented & Verified leaf-to-root order against AWS specification]**
+  4. **Fingerprint Set CA Pinning**: Avoid automated root expansion; verify root certificate fingerprints against an embedded trusted CA set. **[Recommended]**
 
 ### 2.3 REPORTDATA Input Ambiguity Protection (SEC-09)
 - **Problem**: Concatenating variables `version || domain || key` can result in input ambiguity where different configurations serialize to the identical byte stream.

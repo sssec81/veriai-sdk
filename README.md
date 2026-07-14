@@ -10,7 +10,7 @@ VeriAI is a Confidential AI Verification Platform and modular workspace. It gene
 > [!IMPORTANT]
 > **Deployment Configurations (Library vs. Proxy Mode)**
 > VeriAI operates in two distinct deployment configurations:
-> - **Library Mode (Low-friction default)**: The SDK is imported by the host application to generate attestation documents and hash I/O. **Warning**: This mode *does not* prevent a dishonest operator from passing fabricated input/output bytes to the SDK while executing a completely different model.
+> - **Library Mode (Low-friction default)**: The SDK is imported by the host application to generate attestation documents and hash I/O. **Warning**: This mode *does not* prevent a dishonest operator from passing fabricated input/output bytes to the SDK while executing a completely different model. Additionally, the model hash cache trusts local filesystem metadata (file size and modification time) rather than verifying content hashes dynamically. A local attacker with filesystem control could touch file metadata and swap model files without cache invalidation.
 > - **Proxy Mode (Secure)**: The VeriAI proxy runs as an intercepting proxy inside the secure AWS Nitro Enclave, directly managing inference I/O. Because the proxy binary is baked into the enclave's `PCR0`, clients can verify that the proxy itself is handling the data, shutting down operator-fabrication attacks. **Full protection is only achieved in Proxy Mode.**
 
 ---

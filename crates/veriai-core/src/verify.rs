@@ -37,7 +37,12 @@ pub struct Verifier {
 }
 
 impl Verifier {
-    /// Create a new Verifier with default config options
+    /// Create a new Verifier with default config options.
+    ///
+    /// # Security Note
+    /// Callers are responsible for only ever populating `trusted_roots` with roots they actually trust.
+    /// The verification loop checks certificates up to any of these roots, breaking on the first root that
+    /// validates, with no additional filtering inside the verifier.
     pub fn new(
         provider: Arc<dyn AttestationProvider>,
         trusted_roots: Vec<Vec<u8>>,
@@ -46,7 +51,12 @@ impl Verifier {
         Self::new_with_config(provider, trusted_roots, stateful, VerifierConfig::default())
     }
 
-    /// Create a new Verifier with custom config options
+    /// Create a new Verifier with custom config options.
+    ///
+    /// # Security Note
+    /// Callers are responsible for only ever populating `trusted_roots` with roots they actually trust.
+    /// The verification loop checks certificates up to any of these roots, breaking on the first root that
+    /// validates, with no additional filtering inside the verifier.
     pub fn new_with_config(
         provider: Arc<dyn AttestationProvider>,
         trusted_roots: Vec<Vec<u8>>,
