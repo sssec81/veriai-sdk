@@ -1,3 +1,6 @@
 target/
 **/*.rs.bk
 .DS_Store
+deploy/nitro/model.gguf
+deploy/nitro/*.eif
+deploy/nitro/measurements.json

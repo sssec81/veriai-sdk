@@ -20,6 +20,10 @@ In Proxy Mode, VeriAI runs as an intercepting proxy inside the secure AWS Nitro 
 
 The receipt is a `COSE_Sign1` structure enclosing a CBOR Web Token (CWT) with the following claims:
 
+New receipts place the `application/cwt` content type in the protected COSE
+header. The verifier also accepts earlier v1 receipts that placed the same
+value in the unprotected header; conflicting or unknown content types fail.
+
 | Claim Key | CDDL Type | Name | Description |
 |---|---|---|---|
 | **6000** | `bstr .size 32` | `model-hash` | SHA-256 Merkle root of the model file |
@@ -54,3 +58,7 @@ Verifiers must perform the following validation steps sequentially:
    * **(Rust SDK Stateful Verifier only)**: Compute the identity fingerprint:
      $$\text{IdentityFingerprint} = \text{SHA-256}(\text{PCR0} \mathbin{\Vert} \text{PCR3} \mathbin{\Vert} \text{PCR4} \mathbin{\Vert} \text{module\_id} \mathbin{\Vert} \text{cert\_fingerprint})$$
      Verify that `sequence-num` (6004) increases monotonically for the same fingerprint. Allow reset only if the fingerprint changes.
+
+The WASM verifier performs the same cryptographic and policy checks without
+sequence state. Browser applications must track unique nonces themselves or
+submit receipts to the stateful verifier service.

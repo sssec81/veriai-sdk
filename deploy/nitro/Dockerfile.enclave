@@ -1,0 +1,46 @@
+FROM debian:bookworm-slim AS llama-builder
+
+ARG LLAMA_CPP_REF=a935fbffe
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential ca-certificates cmake git \
+    && rm -rf /var/lib/apt/lists/*
+RUN git clone https://github.com/ggml-org/llama.cpp.git /src/llama.cpp \
+    && cd /src/llama.cpp \
+    && git checkout "${LLAMA_CPP_REF}" \
+    && cmake -S . -B build \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DGGML_NATIVE=OFF \
+        -DGGML_METAL=OFF \
+        -DGGML_CUDA=OFF \
+        -DLLAMA_CURL=OFF \
+    && cmake --build build --config Release --target llama-cli -j2
+
+FROM rust:1.88-bookworm AS rust-builder
+WORKDIR /src/veriai
+COPY Cargo.toml Cargo.lock ./
+COPY crates crates
+COPY examples examples
+COPY tests tests
+RUN cargo build --locked --release -p chat-demo \
+    --no-default-features --features real-hardware
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates libgomp1 socat \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/veriai
+COPY --from=rust-builder /src/veriai/target/release/chat-demo /usr/local/bin/chat-demo
+COPY --from=llama-builder /src/llama.cpp/build/bin/llama-cli /usr/local/bin/llama-cli
+COPY deploy/nitro/entrypoint.sh /usr/local/bin/veriai-enclave-entrypoint
+COPY deploy/nitro/model.gguf /opt/veriai/model.gguf
+
+ENV VERIAI_RUNTIME=llama_cpp \
+    VERIAI_MODEL_PATH=/opt/veriai/model.gguf \
+    VERIAI_MODEL_ID=nitro-model \
+    LLAMA_CLI_PATH=/usr/local/bin/llama-cli \
+    VERIAI_INLINE_VERIFY=false \
+    VERIAI_MAX_CONCURRENT_INFERENCES=1 \
+    VSOCK_PORT=3000
+
+ENTRYPOINT ["/usr/local/bin/veriai-enclave-entrypoint"]

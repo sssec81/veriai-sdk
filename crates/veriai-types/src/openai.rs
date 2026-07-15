@@ -63,5 +63,8 @@ pub struct ChatCompletionResponse {
     pub model: String,
     pub choices: Vec<Choice>,
     pub usage: Usage,
+    /// Base64-encoded COSE_Sign1 receipt for independent verification.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub receipt: Option<String>,
     pub verification: Option<VerificationResult>,
 }

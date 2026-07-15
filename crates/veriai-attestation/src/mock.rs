@@ -42,6 +42,14 @@ impl Default for MockAttestationProvider {
 
 #[async_trait]
 impl AttestationProvider for MockAttestationProvider {
+    fn name(&self) -> &'static str {
+        "mock-nitro"
+    }
+
+    fn is_hardware_backed(&self) -> bool {
+        false
+    }
+
     async fn generate(
         &self,
         user_data: Option<&[u8]>,

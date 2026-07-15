@@ -28,7 +28,9 @@ axum = "0.7"
 sha2 = "0.10"
 hex = "0.4"
 rand_core = { version = "0.6", features = ["getrandom"] }
+base64ct = { version = "1.6", features = ["alloc"] }
 veriai-runtime = { path = "../../crates/veriai-runtime" }
 
 [dev-dependencies]
 tower = { version = "0.4", features = ["util"] }
+coset = "0.3"

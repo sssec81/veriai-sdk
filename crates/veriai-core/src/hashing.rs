@@ -1,67 +1,16 @@
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, Read};
 use std::path::Path;
-use std::time::SystemTime;
 
 const CHUNK_SIZE: usize = 4 * 1024 * 1024; // 4MB
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-struct CacheEntry {
-    file_size: u64,
-    modified_time_secs: u64,
-    modified_time_nanos: u32,
-    merkle_root: [u8; 32],
-}
-
 /// Computes the SHA-256 Merkle root of a file using 4MB chunks.
-/// Uses an on-disk cache located in the system temporary directory to avoid re-hashing large files if they haven't changed.
 ///
-/// # Security Note
-/// The cache validates entries against file size + modified time (mtime) only, not content.
-/// This is safe only under the Library Mode threat model (disclaimed in the README). A filesystem-level
-/// attacker could preserve the mtime/size while swapping the model file content.
+/// The model is read on every call. Receipt generation and verification must not
+/// trust a metadata-only cache for model identity.
 pub fn compute_model_hash<P: AsRef<Path>>(path: P) -> io::Result<[u8; 32]> {
-    let path = path.as_ref();
-    let metadata = std::fs::metadata(path)?;
-    let file_size = metadata.len();
-    let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-    let duration = modified
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default();
-    let mtime_secs = duration.as_secs();
-    let mtime_nanos = duration.subsec_nanos();
-
-    // Try loading from cache
-    let cache_dir = std::env::temp_dir().join("veriai_cache");
-    let cache_file = cache_dir.join("model_hashes.json");
-
-    if let Ok(cache) = load_cache(&cache_file) {
-        let path_str = path.to_string_lossy().into_owned();
-        if let Some(entry) = cache.get(&path_str).filter(|entry| {
-            entry.file_size == file_size
-                && entry.modified_time_secs == mtime_secs
-                && entry.modified_time_nanos == mtime_nanos
-        }) {
-            return Ok(entry.merkle_root);
-        }
-    }
-
-    // Recompute hash
-    let root = hash_file_merkle(path)?;
-
-    // Update cache
-    let entry = CacheEntry {
-        file_size,
-        modified_time_secs: mtime_secs,
-        modified_time_nanos: mtime_nanos,
-        merkle_root: root,
-    };
-    let _ = save_cache(&cache_file, path.to_string_lossy().as_ref(), entry);
-
-    Ok(root)
+    hash_file_merkle(path.as_ref())
 }
 
 /// Computes the SHA-256 Merkle root of a file using 4MB chunks.
@@ -131,26 +80,4 @@ fn hash_file_merkle(path: &Path) -> io::Result<[u8; 32]> {
     }
 
     Ok(current_level[0])
-}
-
-fn load_cache(cache_file: &Path) -> io::Result<HashMap<String, CacheEntry>> {
-    if !cache_file.exists() {
-        return Ok(HashMap::new());
-    }
-    let file = File::open(cache_file)?;
-    let cache =
-        serde_json::from_reader(file).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    Ok(cache)
-}
-
-fn save_cache(cache_file: &Path, key: &str, entry: CacheEntry) -> io::Result<()> {
-    if let Some(parent) = cache_file.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let mut cache = load_cache(cache_file).unwrap_or_default();
-    cache.insert(key.to_string(), entry);
-
-    let file = File::create(cache_file)?;
-    serde_json::to_writer_pretty(file, &cache).map_err(io::Error::other)?;
-    Ok(())
 }

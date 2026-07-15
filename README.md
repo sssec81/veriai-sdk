@@ -21,6 +21,7 @@ crates/
 ├── veriai-attestation # Hardware Attestation provider trait and mock/real driver backends
 ├── veriai-runtime     # InferenceRuntime traits and modular LLM adapters (mock/llama.cpp)
 ├── veriai-cli         # "veriai" CLI for inspecting and verifying receipts
+├── veriai-wasm        # Stateless browser verifier
 └── verifier-service   # Axum REST service exposing JSON checklist verify endpoints
 
 examples/
@@ -100,6 +101,7 @@ while attestation is provided by the mock provider:
     "completion_tokens": 40,
     "total_tokens": 58
   },
+  "receipt": "<base64-cose-sign1-receipt>",
   "verification": {
     "valid": true,
     "receipt": {
@@ -127,8 +129,8 @@ while attestation is provided by the mock provider:
       { "name": "Input Hash", "status": "passed", "details": null },
       { "name": "Output Hash", "status": "passed", "details": null }
     ],
-    "attestation_provider": "nitro",
-    "verified_hardware": true,
+    "attestation_provider": "mock-nitro",
+    "verified_hardware": false,
     "error": null
   }
 }
@@ -166,6 +168,11 @@ cargo run -p chat-demo
 The real-hardware build additionally requires `TRUSTED_ROOT_CERT_PATH` and
 `EXPECTED_PCR0`. The demo hashes the canonical serialized request, the actual
 model file, and the exact completion returned by `llama-cli`.
+
+In real-hardware mode, inline verification defaults to off. The enclave proxy
+returns the base64 receipt and an external verifier checks it against trusted
+AWS roots and the expected PCR0. See [deploy/nitro/README.md](deploy/nitro/README.md)
+for the reference deployment layout.
 
 For a local real-inference/mock-attestation run, copy `.env.example`, set the
 model path, and load it in your shell before starting the demo.
@@ -224,6 +231,24 @@ The verifier service reads trust configuration at startup rather than accepting 
 from clients. Set `TRUSTED_ROOT_CERT_PATH` (or `TRUSTED_ROOT_CERT_PEM`) and
 `EXPECTED_PCR0` (96 hex characters). Set `STATEFUL_VERIFICATION=true` to keep
 sequence state for the lifetime of the service process.
+Set `STATE_FILE_PATH` to persist sequence state across normal service restarts.
+The file backend is intended for one verifier process; use a transactional
+shared store before running multiple verifier instances.
+
+## WASM verifier
+
+`veriai-wasm` provides stateless receipt verification for browser clients. It
+verifies the receipt, attestation chain, PCR0, nonce, and expected hashes, but it
+does not retain replay state between calls. The caller must issue and track
+unique nonces or use a stateful verifier service.
+
+```bash
+rustup target add wasm32-unknown-unknown
+cargo build -p veriai-wasm --target wasm32-unknown-unknown --release
+```
+
+CI limits the full-chain WASM artifact to 350 KB gzipped. The stricter 200 KB
+planning target remains open.
 
 ---
 

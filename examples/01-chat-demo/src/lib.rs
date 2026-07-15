@@ -1,9 +1,10 @@
 use axum::{
     Json, Router,
-    extract::{State, rejection::JsonRejection},
+    extract::{DefaultBodyLimit, State, rejection::JsonRejection},
     http::{HeaderMap, StatusCode},
     routing::post,
 };
+use base64ct::{Base64, Encoding};
 use rand_core::{OsRng, RngCore};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -29,9 +30,17 @@ const MOCK_ROOT_PEM: &str = include_str!("../../../tests/fixtures/mock-aws-root.
 struct AppState {
     runtime: Arc<dyn InferenceRuntime>,
     generator: Arc<ReceiptGenerator>,
-    verifier: Arc<Verifier>,
+    verifier: Option<Arc<Verifier>>,
     model_hash: [u8; 32],
-    expected_pcr0: Arc<[u8]>,
+    model_id: Arc<str>,
+    expected_pcr0: Option<Arc<[u8]>>,
+    inference_slots: Arc<tokio::sync::Semaphore>,
+}
+
+struct RuntimeConfig {
+    runtime: Arc<dyn InferenceRuntime>,
+    model_hash: [u8; 32],
+    model_id: String,
 }
 
 #[derive(Serialize)]
@@ -50,34 +59,54 @@ pub fn app() -> Router {
     Router::new()
         .route("/v1/chat/completions", post(chat_completions_handler))
         .route("/proxy/v1/chat/completions", post(chat_completions_handler))
+        .layer(DefaultBodyLimit::max(128 * 1024))
         .with_state(state)
 }
 
 fn build_state() -> Result<AppState, String> {
     let provider: Arc<dyn AttestationProvider> = configured_provider();
-    let (runtime, model_hash) = configured_runtime()?;
-    let root_pem = configured_root_pem();
-    let expected_pcr0 = configured_pcr0()?;
+    let RuntimeConfig {
+        runtime,
+        model_hash,
+        model_id,
+    } = configured_runtime()?;
     let stateful = std::env::var("STATEFUL_VERIFICATION")
         .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
+    let max_concurrent_inferences = std::env::var("VERIAI_MAX_CONCURRENT_INFERENCES")
+        .unwrap_or_else(|_| "1".to_string())
+        .parse::<usize>()
+        .map_err(|error| format!("invalid VERIAI_MAX_CONCURRENT_INFERENCES: {error}"))?;
+    if max_concurrent_inferences == 0 {
+        return Err("VERIAI_MAX_CONCURRENT_INFERENCES must be greater than zero".to_string());
+    }
 
     let generator = Arc::new(ReceiptGenerator::new(provider.clone()));
-    let verifier = Arc::new(
-        Verifier::from_pem(provider, &root_pem, stateful)
-            .map_err(|error| format!("invalid trusted root: {error}"))?,
-    );
+    let inline_verify = std::env::var("VERIAI_INLINE_VERIFY")
+        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+        .unwrap_or(!cfg!(feature = "real-hardware"));
+    let (verifier, expected_pcr0) = if inline_verify {
+        let root_pem = configured_root_pem()?;
+        let expected_pcr0 = configured_pcr0()?;
+        let verifier = Verifier::from_pem(provider, &root_pem, stateful)
+            .map_err(|error| format!("invalid trusted root: {error}"))?;
+        (Some(Arc::new(verifier)), Some(Arc::from(expected_pcr0)))
+    } else {
+        (None, None)
+    };
 
     Ok(AppState {
         runtime,
         generator,
         verifier,
         model_hash,
-        expected_pcr0: Arc::from(expected_pcr0),
+        model_id: Arc::from(model_id),
+        expected_pcr0,
+        inference_slots: Arc::new(tokio::sync::Semaphore::new(max_concurrent_inferences)),
     })
 }
 
-fn configured_runtime() -> Result<(Arc<dyn InferenceRuntime>, [u8; 32]), String> {
+fn configured_runtime() -> Result<RuntimeConfig, String> {
     let runtime_name = std::env::var("VERIAI_RUNTIME").unwrap_or_else(|_| {
         if cfg!(feature = "real-hardware") {
             "llama_cpp".to_string()
@@ -87,7 +116,12 @@ fn configured_runtime() -> Result<(Arc<dyn InferenceRuntime>, [u8; 32]), String>
     });
 
     if runtime_name == "mock" {
-        return Ok((Arc::new(MockRuntime::new()), [0x55; 32]));
+        return Ok(RuntimeConfig {
+            runtime: Arc::new(MockRuntime::new()),
+            model_hash: [0x55; 32],
+            model_id: std::env::var("VERIAI_MODEL_ID")
+                .unwrap_or_else(|_| "veriai-mock".to_string()),
+        });
     }
     if runtime_name != "llama_cpp" {
         return Err(format!("unsupported VERIAI_RUNTIME: {runtime_name}"));
@@ -102,25 +136,36 @@ fn configured_runtime() -> Result<(Arc<dyn InferenceRuntime>, [u8; 32]), String>
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| std::path::PathBuf::from("llama-cli"));
 
-    Ok((
-        Arc::new(LlamaCppRuntime::with_binary(model_path, binary)),
+    let model_id = std::env::var("VERIAI_MODEL_ID").unwrap_or_else(|_| {
+        model_path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("local-model")
+            .to_string()
+    });
+
+    Ok(RuntimeConfig {
+        runtime: Arc::new(LlamaCppRuntime::with_binary(model_path, binary)),
         model_hash,
-    ))
+        model_id,
+    })
 }
 
-fn configured_root_pem() -> String {
+fn configured_root_pem() -> Result<String, String> {
     #[cfg(feature = "real-hardware")]
     {
         if let Ok(pem) = std::env::var("TRUSTED_ROOT_CERT_PEM") {
-            return pem;
+            return Ok(pem);
         }
-        let path = std::env::var("TRUSTED_ROOT_CERT_PATH")
-            .expect("TRUSTED_ROOT_CERT_PATH or TRUSTED_ROOT_CERT_PEM is required");
-        return std::fs::read_to_string(path).expect("failed to read trusted root certificate");
+        let path = std::env::var("TRUSTED_ROOT_CERT_PATH").map_err(|_| {
+            "TRUSTED_ROOT_CERT_PATH or TRUSTED_ROOT_CERT_PEM is required".to_string()
+        })?;
+        return std::fs::read_to_string(path)
+            .map_err(|error| format!("failed to read trusted root certificate: {error}"));
     }
     #[cfg(not(feature = "real-hardware"))]
     {
-        MOCK_ROOT_PEM.to_string()
+        Ok(MOCK_ROOT_PEM.to_string())
     }
 }
 
@@ -181,6 +226,17 @@ async fn chat_completions_handler(
             error.to_string(),
         )
     })?;
+    let inference_permit = state
+        .inference_slots
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| {
+            api_error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "inference_busy",
+                "the configured inference capacity is busy",
+            )
+        })?;
     let inference_result = state
         .runtime
         .generate(inference_req)
@@ -192,6 +248,7 @@ async fn chat_completions_handler(
                 error.to_string(),
             )
         })?;
+    drop(inference_permit);
 
     let input_hash: [u8; 32] = Sha256::digest(&canonical_input).into();
     let output_hash: [u8; 32] = Sha256::digest(inference_result.content.as_bytes()).into();
@@ -208,24 +265,30 @@ async fn chat_completions_handler(
                 error.to_string(),
             )
         })?;
-    let verify_result = state
-        .verifier
-        .verify(
-            &receipt_bytes,
-            state.model_hash,
-            input_hash,
-            output_hash,
-            client_nonce,
-            &state.expected_pcr0,
-        )
-        .await
-        .map_err(|error| {
-            api_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "verification_error",
-                error.to_string(),
+    let verify_result =
+        if let (Some(verifier), Some(expected_pcr0)) = (&state.verifier, &state.expected_pcr0) {
+            Some(
+                verifier
+                    .verify(
+                        &receipt_bytes,
+                        state.model_hash,
+                        input_hash,
+                        output_hash,
+                        client_nonce,
+                        expected_pcr0,
+                    )
+                    .await
+                    .map_err(|error| {
+                        api_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "verification_error",
+                            error.to_string(),
+                        )
+                    })?,
             )
-        })?;
+        } else {
+            None
+        };
 
     let created = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -238,7 +301,7 @@ async fn chat_completions_handler(
         id: format!("chatcmpl-veriai-{created}"),
         object: "chat.completion".to_string(),
         created,
-        model: payload.model,
+        model: state.model_id.to_string(),
         choices: vec![Choice {
             index: 0,
             message: Message {
@@ -252,7 +315,8 @@ async fn chat_completions_handler(
             completion_tokens,
             total_tokens: prompt_tokens + completion_tokens,
         },
-        verification: Some(verify_result),
+        receipt: Some(Base64::encode_string(&receipt_bytes)),
+        verification: verify_result,
     }))
 }
 

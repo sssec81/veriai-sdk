@@ -4,8 +4,12 @@ use axum::{
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use tokio::io::AsyncWriteExt;
 use tower_http::{limit::RequestBodyLimitLayer, trace::TraceLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use veriai_attestation::AttestationProvider;
@@ -17,11 +21,14 @@ use veriai_core::verify::Verifier;
 use veriai_types::VerificationResult;
 
 const MAX_REQUEST_BODY: usize = 128 * 1024;
+static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone)]
 struct AppState {
     expected_pcr0: Arc<[u8]>,
     verifier: Arc<Verifier>,
+    replay_state_path: Option<PathBuf>,
+    replay_write_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -66,14 +73,25 @@ async fn main() {
         .unwrap_or_else(|e| panic!("Trusted root configuration is invalid: {e}"));
     let expected_pcr0 = load_expected_pcr0()
         .unwrap_or_else(|e| panic!("Expected PCR0 configuration is invalid: {e}"));
-    let stateful = std::env::var("STATEFUL_VERIFICATION")
-        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
+    let replay_state_path = std::env::var_os("STATE_FILE_PATH").map(PathBuf::from);
+    let stateful = replay_state_path.is_some()
+        || std::env::var("STATEFUL_VERIFICATION")
+            .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
     let verifier = Verifier::from_pem(configured_provider(), &trusted_root_pem, stateful)
         .unwrap_or_else(|e| panic!("Trusted root configuration is invalid: {e}"));
+    if let Some(path) = replay_state_path.as_deref().filter(|path| path.exists()) {
+        let saved_state = load_replay_state(path)
+            .unwrap_or_else(|e| panic!("Replay state configuration is invalid: {e}"));
+        verifier
+            .set_state(saved_state)
+            .unwrap_or_else(|e| panic!("Replay state could not be restored: {e}"));
+    }
     let state = AppState {
         expected_pcr0: Arc::from(expected_pcr0),
         verifier: Arc::new(verifier),
+        replay_state_path,
+        replay_write_lock: Arc::new(tokio::sync::Mutex::new(())),
     };
 
     let app = Router::new()
@@ -176,6 +194,29 @@ async fn verify_handler(
         )
     })?;
 
+    // File-backed replay state is a single transaction from verification
+    // through persistence. This prevents concurrent requests from observing an
+    // in-memory sequence number that has not been durably recorded yet.
+    let replay_guard = if state.replay_state_path.is_some() {
+        Some(state.replay_write_lock.lock().await)
+    } else {
+        None
+    };
+    let previous_replay_state = if replay_guard.is_some() {
+        state.verifier.get_state().map_err(|error| {
+            tracing::error!("Failed to snapshot replay state: {error}");
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    code: "replay_state_error",
+                    error: "Replay state is unavailable".to_string(),
+                }),
+            )
+        })?
+    } else {
+        None
+    };
+
     let result = state
         .verifier
         .verify(
@@ -200,6 +241,26 @@ async fn verify_handler(
                 }),
             )
         })?;
+
+    if result.valid
+        && let Some(path) = state.replay_state_path.as_deref()
+        && let Err(error) = persist_replay_state_or_rollback(
+            &state.verifier,
+            path,
+            previous_replay_state.unwrap_or_default(),
+        )
+        .await
+    {
+        tracing::error!("Failed to persist replay state: {error}");
+        return Err((
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                code: "replay_state_error",
+                error: "Verification succeeded but replay state could not be persisted".to_string(),
+            }),
+        ));
+    }
+    drop(replay_guard);
 
     tracing::info!("Verification completed. Valid: {}", result.valid);
     Ok(Json(result))
@@ -245,4 +306,147 @@ fn decode_hex_32(s: &str) -> Result<[u8; 32], String> {
     let mut arr = [0u8; 32];
     arr.copy_from_slice(&bytes);
     Ok(arr)
+}
+
+fn load_replay_state(path: &Path) -> Result<HashMap<[u8; 32], u64>, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("failed to read state file: {e}"))?;
+    let saved: HashMap<String, u64> =
+        serde_json::from_slice(&bytes).map_err(|e| format!("invalid state JSON: {e}"))?;
+    saved
+        .into_iter()
+        .map(|(fingerprint, sequence)| {
+            let fingerprint = decode_hex_32(&fingerprint)
+                .map_err(|e| format!("invalid identity fingerprint: {e}"))?;
+            Ok((fingerprint, sequence))
+        })
+        .collect()
+}
+
+async fn persist_replay_state(verifier: &Verifier, path: &Path) -> Result<(), String> {
+    let state = verifier
+        .get_state()
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "stateful verification is disabled".to_string())?;
+    let encoded: HashMap<String, u64> = state
+        .into_iter()
+        .map(|(fingerprint, sequence)| (hex::encode(fingerprint), sequence))
+        .collect();
+    let bytes = serde_json::to_vec_pretty(&encoded)
+        .map_err(|e| format!("failed to encode replay state: {e}"))?;
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "state file path must end in a file name".to_string())?;
+    let counter = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let temporary_path = parent.join(format!(
+        ".{file_name}.{}.{}.tmp",
+        std::process::id(),
+        counter
+    ));
+
+    let mut temporary_file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary_path)
+        .await
+        .map_err(|e| format!("failed to create replay state temporary file: {e}"))?;
+    let write_result = async {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            tokio::fs::set_permissions(&temporary_path, std::fs::Permissions::from_mode(0o600))
+                .await
+                .map_err(|e| format!("failed to set replay state permissions: {e}"))?;
+        }
+        temporary_file
+            .write_all(&bytes)
+            .await
+            .map_err(|e| format!("failed to write replay state: {e}"))?;
+        temporary_file
+            .sync_all()
+            .await
+            .map_err(|e| format!("failed to sync replay state: {e}"))?;
+        drop(temporary_file);
+        tokio::fs::rename(&temporary_path, path)
+            .await
+            .map_err(|e| format!("failed to replace replay state: {e}"))?;
+        std::fs::File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|e| format!("failed to sync replay state directory: {e}"))
+    }
+    .await;
+
+    if write_result.is_err() {
+        let _ = tokio::fs::remove_file(&temporary_path).await;
+    }
+    write_result
+}
+
+async fn persist_replay_state_or_rollback(
+    verifier: &Verifier,
+    path: &Path,
+    previous_state: HashMap<[u8; 32], u64>,
+) -> Result<(), String> {
+    if let Err(persist_error) = persist_replay_state(verifier, path).await {
+        verifier
+            .set_state(previous_state)
+            .map_err(|rollback_error| {
+                format!("{persist_error}; replay state rollback also failed: {rollback_error}")
+            })?;
+        return Err(persist_error);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{load_replay_state, persist_replay_state, persist_replay_state_or_rollback};
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use veriai_attestation::mock::MockAttestationProvider;
+    use veriai_core::verify::Verifier;
+
+    const MOCK_ROOT_PEM: &str = include_str!("../../../tests/fixtures/mock-aws-root.pem");
+
+    #[tokio::test]
+    async fn replay_state_round_trips_through_atomic_file() {
+        let verifier = Verifier::from_pem(
+            Arc::new(MockAttestationProvider::new()),
+            MOCK_ROOT_PEM,
+            true,
+        )
+        .unwrap();
+        let expected = HashMap::from([([0x42; 32], 7)]);
+        verifier.set_state(expected.clone()).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("replay-state.json");
+
+        persist_replay_state(&verifier, &path).await.unwrap();
+
+        assert_eq!(load_replay_state(&path).unwrap(), expected);
+    }
+
+    #[tokio::test]
+    async fn replay_state_rolls_back_when_persistence_fails() {
+        let verifier = Verifier::from_pem(
+            Arc::new(MockAttestationProvider::new()),
+            MOCK_ROOT_PEM,
+            true,
+        )
+        .unwrap();
+        let previous = HashMap::from([([0x42; 32], 7)]);
+        verifier
+            .set_state(HashMap::from([([0x42; 32], 8)]))
+            .unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("missing-parent/replay-state.json");
+
+        assert!(
+            persist_replay_state_or_rollback(&verifier, &path, previous.clone())
+                .await
+                .is_err()
+        );
+        assert_eq!(verifier.get_state().unwrap().unwrap(), previous);
+    }
 }

@@ -411,6 +411,63 @@ async fn test_adversarial_algorithm_agility_downgrade() {
 }
 
 #[tokio::test]
+async fn test_adversarial_conflicting_content_type_headers() {
+    let provider = Arc::new(MockAttestationProvider::new());
+    let generator = ReceiptGenerator::new(provider.clone());
+    let verifier = Verifier::from_pem(provider, MOCK_ROOT_PEM, false).unwrap();
+    let model_hash = [0x11; 32];
+    let input_hash = [0x22; 32];
+    let output_hash = [0x33; 32];
+    let nonce = [0x44; 32];
+    let receipt = generator
+        .generate_receipt(model_hash, input_hash, output_hash, nonce)
+        .await
+        .unwrap();
+
+    let mut cose = CoseSign1::from_slice(&receipt).unwrap();
+    cose.protected.header.content_type = Some(coset::ContentType::Text("application/cwt".into()));
+    cose.protected.original_data = None;
+    cose.unprotected.content_type = Some(coset::ContentType::Text("application/cwt".into()));
+    let tampered = cose.to_vec().unwrap();
+
+    let result = verifier
+        .verify(
+            &tampered,
+            model_hash,
+            input_hash,
+            output_hash,
+            nonce,
+            &[0u8; 48],
+        )
+        .await;
+    assert!(matches!(
+        result,
+        Err(veriai_types::error::VerifyError::InvalidContentType)
+    ));
+}
+
+#[tokio::test]
+async fn test_rejects_invalid_expected_pcr0_length() {
+    let provider = Arc::new(MockAttestationProvider::new());
+    let generator = ReceiptGenerator::new(provider.clone());
+    let verifier = Verifier::from_pem(provider, MOCK_ROOT_PEM, false).unwrap();
+    let receipt = generator
+        .generate_receipt([0x11; 32], [0x22; 32], [0x33; 32], [0x44; 32])
+        .await
+        .unwrap();
+
+    let result = verifier
+        .verify(
+            &receipt, [0x11; 32], [0x22; 32], [0x33; 32], [0x44; 32], &[0u8; 32],
+        )
+        .await;
+    assert!(matches!(
+        result,
+        Err(veriai_types::error::VerifyError::InvalidPcrLength)
+    ));
+}
+
+#[tokio::test]
 async fn test_adversarial_expired_cert_chain() {
     let provider = MockAttestationProvider::new();
     let attestation_doc_bytes = provider.generate(None, None, None).await.unwrap();

@@ -235,7 +235,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         decoded_state.insert(fp, v);
                     }
                 }
-                verifier.set_state(decoded_state);
+                verifier.set_state(decoded_state)?;
             }
 
             println!("\nVeriAI Receipt Verification");
@@ -278,7 +278,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             // Save updated state if stateful
-            if let Some((session_path, state_map)) = stateful.as_ref().zip(verifier.get_state()) {
+            if let Some((session_path, state_map)) = stateful.as_ref().zip(verifier.get_state()?) {
                 let hex_state: HashMap<String, u64> = state_map
                     .into_iter()
                     .map(|(k, v)| (hex::encode(k), v))

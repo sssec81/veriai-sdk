@@ -18,6 +18,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
 
       - name: Cache Cargo Dependencies
         uses: actions/cache@v3
@@ -39,6 +40,13 @@ jobs:
       - name: Run Workspace Tests
         run: cargo test --workspace
 
+      - name: Build WASM Verifier
+        run: cargo build -p veriai-wasm --target wasm32-unknown-unknown --release
+
+      - name: Check WASM Compressed Size
+        run: |
+          size=$(gzip -c target/wasm32-unknown-unknown/release/veriai_wasm.wasm | wc -c)
+          test "$size" -le 350000
+
       - name: Verify Production Release Compilation
         run: cargo build --release --no-default-features --features real-hardware
-

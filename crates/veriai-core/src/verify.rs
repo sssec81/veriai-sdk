@@ -1,5 +1,5 @@
 use base64ct::Encoding;
-use coset::{CborSerializable, CoseSign1};
+use coset::{CborSerializable, ContentType, CoseSign1};
 use ed25519_dalek::{Verifier as EdVerifier, VerifyingKey};
 use sha2::{Digest, Sha256, Sha512};
 use std::collections::HashMap;
@@ -155,7 +155,7 @@ impl Verifier {
                     valid: false,
                     receipt: receipt_info.clone(),
                     checks: $checks_list,
-                    attestation_provider: "nitro".to_string(),
+                    attestation_provider: self.provider.name().to_string(),
                     verified_hardware: false,
                     error: Some($err.to_string()),
                 }
@@ -165,6 +165,9 @@ impl Verifier {
         // Check 0: Pre-allocation Receipt Size limit check
         if receipt_bytes.len() > self.config.max_receipt_size {
             return Err(VerifyError::ReceiptTooLarge);
+        }
+        if expected_pcr0.len() != 48 {
+            return Err(VerifyError::InvalidPcrLength);
         }
 
         // Check 1: Parse Receipt Structure
@@ -187,6 +190,17 @@ impl Verifier {
                 // 2. Reject any algorithm specified in the unprotected header
                 if c.unprotected.alg.is_some() {
                     return Err(VerifyError::AlgorithmInUnprotectedHeader);
+                }
+                match (
+                    c.protected.header.content_type.as_ref(),
+                    c.unprotected.content_type.as_ref(),
+                ) {
+                    (Some(ContentType::Text(value)), None) if value == "application/cwt" => {}
+                    // Earlier v1 receipts placed application/cwt in the
+                    // unprotected header. Keep those receipts readable while
+                    // requiring all newly generated receipts to protect it.
+                    (None, Some(ContentType::Text(value))) if value == "application/cwt" => {}
+                    _ => return Err(VerifyError::InvalidContentType),
                 }
                 add_check!("Receipt Format", "passed", None);
                 c
@@ -518,7 +532,9 @@ impl Verifier {
 
         // Stateful sequence checks
         if let Some(ref state_mutex) = self.state {
-            let mut state = state_mutex.lock().unwrap();
+            let mut state = state_mutex
+                .lock()
+                .map_err(|_| VerifyError::ReplayStateUnavailable)?;
             let identity_fingerprint = compute_identity_fingerprint(&doc);
 
             if let Some(&last_seq) = state
@@ -543,22 +559,31 @@ impl Verifier {
             valid: true,
             receipt: receipt_info,
             checks,
-            attestation_provider: "nitro".to_string(),
-            verified_hardware: true,
+            attestation_provider: self.provider.name().to_string(),
+            verified_hardware: self.provider.is_hardware_backed(),
             error: None,
         })
     }
 
     /// Returns a copy of the internal sequence validation state (if stateful)
-    pub fn get_state(&self) -> Option<HashMap<[u8; 32], u64>> {
-        self.state.as_ref().map(|s| s.lock().unwrap().clone())
+    pub fn get_state(&self) -> Result<Option<HashMap<[u8; 32], u64>>, VerifyError> {
+        self.state
+            .as_ref()
+            .map(|state| {
+                state
+                    .lock()
+                    .map(|guard| guard.clone())
+                    .map_err(|_| VerifyError::ReplayStateUnavailable)
+            })
+            .transpose()
     }
 
     /// Sets/restores the internal sequence validation state (if stateful)
-    pub fn set_state(&self, new_state: HashMap<[u8; 32], u64>) {
+    pub fn set_state(&self, new_state: HashMap<[u8; 32], u64>) -> Result<(), VerifyError> {
         if let Some(ref s) = self.state {
-            *s.lock().unwrap() = new_state;
+            *s.lock().map_err(|_| VerifyError::ReplayStateUnavailable)? = new_state;
         }
+        Ok(())
     }
 }
 

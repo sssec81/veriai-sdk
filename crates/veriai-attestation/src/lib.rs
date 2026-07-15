@@ -18,6 +18,16 @@ use x509_cert::der::{Decode, Encode};
 
 #[async_trait]
 pub trait AttestationProvider: Send + Sync {
+    /// Stable provider name included in verification results.
+    fn name(&self) -> &'static str {
+        "custom"
+    }
+
+    /// Whether successful verification represents real hardware attestation.
+    fn is_hardware_backed(&self) -> bool {
+        false
+    }
+
     /// Generate a hardware attestation document enclosing the given user_data, nonce, and public_key.
     async fn generate(
         &self,

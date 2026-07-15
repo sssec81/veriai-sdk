@@ -14,6 +14,14 @@ impl NitroAttestationProvider {
 
 #[async_trait]
 impl AttestationProvider for NitroAttestationProvider {
+    fn name(&self) -> &'static str {
+        "aws-nitro"
+    }
+
+    fn is_hardware_backed(&self) -> bool {
+        true
+    }
+
     async fn generate(
         &self,
         user_data: Option<&[u8]>,

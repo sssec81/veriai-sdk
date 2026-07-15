@@ -1,4 +1,4 @@
-use coset::{CborSerializable, ContentType, CoseSign1Builder, HeaderBuilder, iana};
+use coset::{CborSerializable, CoseSign1Builder, HeaderBuilder, iana};
 use ed25519_dalek::{Signer, SigningKey};
 use sha2::{Digest, Sha512};
 use std::sync::Arc;
@@ -11,6 +11,7 @@ use veriai_types::error::VerifyError;
 /// Generates cryptographically signed receipts binding model identity, hardware attestation, and input/output hashes.
 pub struct ReceiptGenerator {
     provider: Arc<dyn AttestationProvider>,
+    // ed25519-dalek enables zeroization for SigningKey through its default `std` feature.
     signing_key: SigningKey,
     sequence_num: AtomicU64,
 }
@@ -97,15 +98,13 @@ impl ReceiptGenerator {
         // 3. Wrap in COSE_Sign1
         let protected = HeaderBuilder::new()
             .algorithm(iana::Algorithm::EdDSA)
+            .content_type("application/cwt".to_string())
             .build();
 
         let mut cose_sign1 = CoseSign1Builder::new()
             .protected(protected)
             .payload(payload)
             .build();
-
-        cose_sign1.unprotected.content_type =
-            Some(ContentType::Text("application/cwt".to_string()));
 
         // 4. Sign with the ephemeral Ed25519 key
         let tbs = cose_sign1.tbs_data(&[]);

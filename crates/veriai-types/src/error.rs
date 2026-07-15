@@ -71,11 +71,20 @@ pub enum VerifyError {
     #[error("COSE protected header is missing or invalid")]
     InvalidProtectedHeader,
 
+    #[error("COSE content type must be application/cwt when present and must be protected")]
+    InvalidContentType,
+
     #[error("Security violation: signature algorithm declared in unprotected header")]
     AlgorithmInUnprotectedHeader,
 
     #[error("Timestamp calculation underflow or overflow")]
     InvalidTimestamp,
+
+    #[error("Expected PCR0 must be exactly 48 bytes")]
+    InvalidPcrLength,
+
+    #[error("Replay state is unavailable")]
+    ReplayStateUnavailable,
 
     #[error("Attestation error: {0}")]
     Attestation(String),

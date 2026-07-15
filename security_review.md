@@ -9,12 +9,12 @@ This is a working list of security risks and mitigations in the repository. It i
 | ID | Title | Severity | Impact | Mitigation Status |
 | :--- | :--- | :---: | :--- | :--- |
 | **SEC-01** | Missing Certificate Validity Checks | High | Expired leaf or intermediate certs accepted | **Implemented in code** (checks validity period across entire chain) |
-| **SEC-02A**| Verifier State Replay (Reset/Scale) | Critical | Sequence bypass on verifier restart or horizontal scaling | **Follow-up** (persistent Redis or stateless nonces) |
-| **SEC-02B**| Attestation Receipt Replay | Critical | Valid old receipts accepted forever | **Follow-up** (enforce maximum receipt age) |
-| **SEC-03** | Enclave Private Key Lifecycle Protection | Critical | Key theft if written to disk or cloned in memory | **Follow-up** (use `Zeroizing` and avoid cloning keys) |
-| **SEC-04** | Resource Exhaustion (OOM) via CBOR/COSE | High | Denial of service via malicious large files | **Follow-up** (enforce configurable size limits) |
-| **SEC-05** | Cache Poisoning / Symlink Attacks | High | Privilege escalation, file overwrite, or write corruption | **Follow-up** (atomic writes, strict permissions, no-follow) |
-| **SEC-06** | Algorithm Agility Attacks | High | Downgrade to `none` or weaker signatures | **Follow-up** (check protected headers and reject unknown crit) |
+| **SEC-02A**| Verifier State Replay (Reset/Scale) | Critical | Sequence bypass on verifier restart or horizontal scaling | **Partially implemented** (atomic file persistence for one process; shared transactional storage remains follow-up) |
+| **SEC-02B**| Attestation Receipt Replay | Critical | Valid old receipts accepted forever | **Implemented in code** (maximum receipt age and timestamp checks) |
+| **SEC-03** | Enclave Private Key Lifecycle Protection | Critical | Key theft if written to disk or cloned in memory | **Partially implemented** (`SigningKey` zeroization enabled; locked memory and core-dump policy remain deployment work) |
+| **SEC-04** | Resource Exhaustion (OOM) via CBOR/COSE | High | Denial of service via malicious large files | **Implemented in code** (receipt and HTTP body limits) |
+| **SEC-05** | Cache Poisoning / Symlink Attacks | High | Privilege escalation, file overwrite, or write corruption | **Partially implemented** (metadata cache removed; replay state uses create-new temporary files and atomic replacement) |
+| **SEC-06** | Algorithm Agility Attacks | High | Downgrade to `none` or weaker signatures | **Partially implemented** (protected algorithms and content type checked; unknown critical headers remain follow-up) |
 | **SEC-07** | Certificate Extension Validation | High | Impersonation using client auth certs | **Implemented in code** (checks `basicConstraints CA:true` on intermediates) |
 | **SEC-08** | Root Certificate Pinning Brittleness | High | Service breakdown on AWS root CA rotations | **Follow-up** (support controlled embedded CA fingerprint sets) |
 | **SEC-09** | Input Ambiguity in Key Binding | High | Concatenation prefix collision attacks | **Follow-up** (hash structured CBOR arrays instead of concatenation) |
@@ -24,8 +24,9 @@ This is a working list of security risks and mitigations in the repository. It i
 | **SEC-13** | Memory Leakage & Exposure | Medium | Key leak through core dumps, debugging, or swap | **Follow-up** (use `mlock` and disable core dumps) |
 | **SEC-14** | Dependency Supply Chain | Medium | Upstream library security vulnerabilities | **Follow-up** (add cargo audit, deny, and vet to CI) |
 | **SEC-15** | Merkle Tree Odd-Node Duplication | Medium | Hash collision vulnerabilities during inclusion proofs | **Documented** (the current hash is not an inclusion proof) |
-| **SEC-16** | Model Hash Cache Metadata Trust | Medium | Swapped-out model files via touched file metadata | **Documented** (the cache relies on file metadata) |
+| **SEC-16** | Model Hash Cache Metadata Trust | Medium | Swapped-out model files via touched file metadata | **Implemented in code** (model files are rehashed; metadata-only cache removed) |
 | **SEC-17** | Weak Trusted Roots Verification Path | Low | Defense-in-depth bypass if mixed roots list provided | **Documented** (callers must populate trusted roots correctly) |
+| **SEC-18** | WASM Size Budget | Medium | Larger browser download and startup cost | **Follow-up** (full-chain build is below 350 KB gzipped but above the 200 KB planning target) |
 
 ---
 
@@ -56,10 +57,11 @@ This is a working list of security risks and mitigations in the repository. It i
   ```
 
 ### 2.4 State Replay Protection & distributed Enclaves (SEC-02A, SEC-02B)
-- **Problem**: Mutex state tracks sequence numbers in-memory. If the verifier restarts or is scaled horizontally, sequence records reset to zero. Furthermore, old receipts are valid forever.
+- **Problem**: A verifier restart or multiple verifier instances can lose or split sequence state.
 - **Mitigations**:
-  1. **Distributed Sequence Store**: Track sequence numbers using Redis or DynamoDB.
-  2. **Receipt Expiration Check**: Enforce maximum allowed receipt age (e.g. `MAX_RECEIPT_AGE = 5 minutes` from generation timestamp).
+  1. **Single-process persistence**: `STATE_FILE_PATH` writes sequence state atomically and restores it on startup. Verification is rolled back if persistence fails.
+  2. **Distributed Sequence Store**: Use a transactional shared database before horizontal scaling.
+  3. **Receipt Expiration Check**: The verifier enforces a five-minute default maximum receipt age.
 
 ### 2.5 Private Key Lifecycle (SEC-03, SEC-13)
 - **Problem**: Ephemeral signing keys could leak via core dumps, memory pages, or cloning.
@@ -75,9 +77,9 @@ This is a working list of security risks and mitigations in the repository. It i
 - **Problem**: The current Merkle Tree implementation duplicates odd nodes (`hashing.rs`), replicating the Bitcoin CVE-2012-2459 vulnerability. If inclusion proofs are introduced later, this creates collision vectors.
 - **Mitigation**: Promote the odd node directly up the tree level instead of duplicating.
 
-### 2.8 Cache Hijack Protection (SEC-16)
-- **Problem**: Model-hash caching relies on file `mtime` and size, allowing attackers to touch file metadata and swap model files without cache invalidation.
-- **Mitigation**: Add a content hashing validation step or explicitly restrict cache scope.
+### 2.8 Model hashing (SEC-16)
+- **Problem**: A metadata-only cache can return a stale model identity after a file replacement.
+- **Mitigation**: The current implementation reads and hashes the model file on every call.
 
 ### 2.9 Trusted Roots Validation Loop (SEC-17)
 - **Problem**: Loop over `trusted_roots` breaks on the first validating root, leaving defense-in-depth security entirely up to the caller to maintain a clean root set.
@@ -93,7 +95,7 @@ A static analysis scan was run across the workspace crates to identify potential
 - **`veriai-attestation`**: **0 unwraps** inside real drivers.
 - **`veriai-types`**: **0 unwraps** inside public types.
 
-**Panic safety statement**: There are no identified panic paths reachable from normal untrusted input parsing. (Possibilities of poison panics on `.lock().unwrap()` exist only if other threads panic while holding a state mutex).
+**Panic safety statement**: No panic path was found in normal untrusted receipt parsing. The mock provider still uses an `expect` for repository-owned certificate fixtures; it is not used by the real-hardware backend.
 
 ---
 
