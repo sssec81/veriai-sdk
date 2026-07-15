@@ -2,7 +2,8 @@
 
 **Date:** July 13, 2026
 
-**Status:** Planning notes. The implementation is ahead of parts of this document; check the code and README for current behavior.
+**Status:** Historical planning notes. This file is not the source of truth for
+current behavior; use the README, `docs/SPEC.md`, and the code instead.
 
 ---
 
@@ -33,7 +34,7 @@ Build a small, vendor-neutral attestation library for AI inference. The library 
 
 Build an open-source Rust SDK that generates signed receipts binding model identity, AWS Nitro attestation, and input/output hashes. The SDK can run as a library or as a proxy inside an enclave.
 
-**Security model, stated plainly:** v1 ships two deployment modes with materially different guarantees. **Library mode** (the default, lowest-friction integration) lets an operator call the SDK to attest and hash whatever it's given — it does *not* stop a dishonest operator from feeding the SDK fabricated input/output bytes while running something else. **Proxy mode** (Section 8.1) is the only mode that actually closes that gap, because it intercepts the real I/O itself. Anywhere this PRD or its marketing says "cryptographic proof," that claim is only fully true in proxy mode. This distinction should be in the README's first paragraph, not buried in the risk table.
+**Security model, stated plainly:** library mode signs and hashes the bytes it is given. The local proxy example owns the runtime call, but only the AWS Nitro deployment places that proxy and model inside a measured enclave image. Claims about hardware-backed inference apply only after that deployment is built and its PCR0 is checked.
 
 ### 1.3 Core Problem Statement
 
@@ -83,14 +84,14 @@ All decisions are verified against the official AWS Nitro Enclaves Attestation D
 | 5 | **Reboot detection** | No standalone `boot_id`. Use **identity fingerprint**: `(PCR0, PCR3, PCR4, module_id, cert_chain_fingerprint)`. Store **SHA‑256 of concatenated fingerprint** for compact state. **Rust SDK only — see #14.** |
 | 6 | **Attestation doc timestamp** | `uint .size 8` (milliseconds since UNIX epoch). Verifier checks both claim 6007 (seconds) and doc timestamp (ms) within ±5 min. |
 | 7 | **Security boundary** | SDK is a library by default. **Full I/O-fabrication protection requires proxy deployment** inside the enclave, and the proxy binary **must** be part of PCR0. Library mode alone does not prevent a dishonest operator from fabricating inputs/outputs — see Section 1.2. |
-| 8 | **Disk cache** | Performance only; verification always recomputes model hash from actual file. |
-| 9 | **WASM size** | ≤200 KB **gzipped**, budget target. CI enforces the current build; if X.509 chain validation plus Ed25519/P-384 verification exceeds budget, fallback is to ship a pinned-leaf-certificate mode (skip full chain walk) rather than slip the size target — decide by end of Week 1 (see #15). |
+| 8 | **Model hash caching** | No metadata-only cache is used. The chat demo computes the model hash during runtime initialization; Nitro PCR0 must protect the model and image after startup. |
+| 9 | **WASM size** | Current full-chain build is 308 KB gzipped and CI enforces a 350 KB ceiling. The original 200 KB target remains open; reducing dependencies or using a pinned-leaf mode are possible follow-ups. |
 | 10 | **Build‑time guard** | `mock‑hardware` and `real‑hardware` mutually exclusive. `compile_error!` on release with mock (except `test‑mode`). |
 | 11 | **Mock signing** | Mock docs signed by test private key; verifier accepts override only in test builds. |
 | 12 | **COSE_Sign1 headers** | `alg`: `EdDSA` (-8). `kid`: omitted. `content‑type`: `application/cwt` (SHOULD be present). |
 | 13 | **Receipt wire format** | Raw COSE_Sign1 bytes. Transport encoding is caller's responsibility. |
 | 14 | **WASM replay protection gap** | The WASM verifier is stateless and does not track sequence numbers or identity fingerprints (per #5). It therefore cannot detect enclave reboot/replay across calls. This must be documented as an explicit limitation everywhere the WASM verifier is offered — not just implied by "stateless." Browser/DePIN integrators relying on WASM-only verification get weaker guarantees than Rust-SDK integrators. |
-| 15 | **WASM budget contingency** | If Week 1 dependency audit (#7 in Next Steps) shows the 200KB gzipped budget is unreachable with full CA-bundle chain validation, ship v1 WASM with a pinned trusted leaf/intermediate cert (operator-configured) instead of full chain walking, and flag full chain validation as a v1.1 follow-up. |
+| 15 | **WASM budget contingency** | The current full-chain build is above the 200 KB target. Decide later whether to reduce dependencies or offer an explicitly weaker pinned-leaf mode. |
 
 ---
 
@@ -100,16 +101,16 @@ All decisions are verified against the official AWS Nitro Enclaves Attestation D
 
 - TEE‑based attestation (AWS Nitro only)
 - Full local simulation via `mock‑nsm`
-- Merkle‑tree model hashing with disk caching (raw file bytes)
-- Input/output canonicalization (Core Deterministic CBOR)
+- Merkle‑tree model hashing over raw file bytes; the chat demo computes the model identity during runtime initialization
+- Canonical JSON serialization for the chat request and SHA-256 hashing of the exact output bytes
 - COSE_Sign1 / CWT receipt generation (claims 6000–6007, 6011, 6012)
 - PCR0 validation (48‑byte SHA‑384)
 - Rust verification SDK (stateful: sequence + identity fingerprint tracking)
-- WASM verification module (stateless, ≤200KB gzipped target — see Decision #15 for contingency; replay-detection gap explicitly documented per Decision #14)
-- CLI tool, Docker reference container
+- WASM verification module (stateless, currently 308 KB gzipped; 200 KB remains a planning target)
+- CLI tool and Docker/Nitro reference deployment
 - Build‑time safety guard
 - Open‑source (Apache 2.0)
-- Minimal working proxy-mode example (elevated from "stub" — see Section 12) so the only mode with real I/O-fabrication protection has a runnable reference, not just documentation
+- Local proxy example and an AWS Nitro deployment reference in `examples/01-chat-demo/` and `deploy/nitro/`
 
 ### Out of Scope (v1)
 
@@ -118,7 +119,7 @@ All decisions are verified against the official AWS Nitro Enclaves Attestation D
 - Custom registry services
 - Intel TDX / AMD SEV‑SNP
 - Hosted Policy Engine / Dashboard (v2)
-- Claims 6008–6012 (reserved)
+- Claims 6008–6010 (reserved; claims 6011 and 6012 are used)
 - Sequence/reboot checks in WASM verifier (documented limitation, not deferred silently)
 - Multi‑file model formats (only single‑file Safetensors or raw binary)
 - Full X.509 chain validation in WASM if budget contingency (#15) is triggered
@@ -134,42 +135,29 @@ veriai-sdk/
 │   │   ├── mock-hardware   # default for dev
 │   │   ├── real-hardware   # for release (mutually exclusive)
 │   │   └── test-mode       # bypasses compile_error for tests
-├── src/
-│   ├── nsm/
-│   │   ├── mod.rs
-│   │   ├── schema.rs       # pure CBOR parser (WASM-compatible)
-│   │   ├── mock.rs
-│   │   └── real.rs
-│   ├── hashing.rs
-│   ├── receipt.rs
-│   ├── verify.rs
-│   ├── error.rs
-│   ├── cli.rs
-│   └── lib.rs
-├── wasm/
-│   └── lib.rs               # verifier only, no NSM
-├── tests/
-│   ├── schema.rs
-│   ├── test_vectors.rs
-│   └── fuzz/
+├── crates/
+│   ├── veriai-types/
+│   ├── veriai-core/
+│   ├── veriai-attestation/
+│   ├── veriai-runtime/
+│   ├── veriai-cli/
+│   ├── veriai-wasm/
+│   └── verifier-service/
 ├── tests/fixtures/
 │   ├── mock-aws-root.pem
 │   ├── mock-aws-root.key.pem
-│   ├── aws-cabundle.pem
-│   └── real-nitro-attestation.cbor   # captured from real Nitro
+│   └── mock certificate fixtures
 ├── examples/
-│   └── proxy_reference/     # runnable, not just a stub — see Section 5
+│   └── 01-chat-demo/
+├── deploy/nitro/
 └── .github/workflows/
-    ├── test.yml
-    ├── release.yml
-    ├── wasm.yml
-    └── fuzz.yml
+    └── ci.yml
 ```
 
 ### Build‑Time Safety Guard
 
 ```rust
-// src/lib.rs
+// crates/*/src/lib.rs
 #[cfg(all(feature = "mock-hardware", feature = "real-hardware"))]
 compile_error!("Features 'mock-hardware' and 'real-hardware' are mutually exclusive.");
 
@@ -207,16 +195,16 @@ veriai-claims = {
 | NSM Module (split) | `nsm/schema.rs` (pure CBOR), `nsm/mock.rs`, `nsm/real.rs`. Includes P‑384 signature verification. |
 | Schema Validation | `tests/schema.rs` – compares mock CBOR against real Nitro fixture. |
 | PCR0 Validation | Verifier receives `expected_pcr0` (48 bytes). Extracts PCR0 from attestation doc; rejects on mismatch. |
-| Merkle Tree Hasher | `src/hashing.rs` – 4MB chunks, disk caching, raw file bytes. Always recompute against file. |
-| Input/Output Hashing | Core Deterministic CBOR on raw bytes. CLI: file/stdin. SDK: `&[u8]`. |
-| COSE_Sign1 / CWT Builder | `src/receipt.rs` – claims 6000–6007, 6011, 6012 (all mandatory). Headers: alg=-8, content‑type SHOULD be present. |
-| Receipt Verification SDK | `src/verify.rs` – 6‑step flow. Stateful sequence + identity fingerprint tracking. |
-| Error Taxonomy | `src/error.rs` – full `VerifyError` enum. |
-| WASM Verification Module | `wasm/` – verifier only, no NSM. Bundles AWS CABundle (or pinned leaf cert if budget contingency triggers — Decision #15). Stateless; replay-detection gap documented per Decision #14. JS API: `verify_receipt(...)` returns `{ valid: bool, error?: string }`. |
-| CLI Tool | `src/cli.rs` – `generate`, `verify` (stateful with session file). |
-| Docker Reference | `Dockerfile` – `dev` profile. Production uses `--release --no-default-features --features real-hardware`. |
-| CI | GitHub Actions: test, release check, WASM gzipped size, fuzz. |
-| Proxy Reference Example | `examples/proxy_reference/` – minimal but runnable end-to-end example. Documentation states proxy must be in PCR0 and is the only mode with real I/O-fabrication protection. |
+| Merkle Tree Hasher | `crates/veriai-core/src/hashing.rs` – 4MB chunks, raw file bytes, no metadata-only cache. The chat demo hashes once during runtime initialization. |
+| Input/Output Hashing | Canonical JSON request bytes and SHA-256 of the exact completion output. |
+| COSE_Sign1 / CWT Builder | `crates/veriai-core/src/receipt.rs` – claims 6000–6007, 6011, 6012. New receipts protect `application/cwt`. |
+| Receipt Verification SDK | `crates/veriai-core/src/verify.rs` – verification flow, stateful sequence, and identity fingerprint tracking. |
+| Error Taxonomy | `crates/veriai-types/src/error.rs` – `VerifyError` and attestation errors. |
+| WASM Verification Module | `crates/veriai-wasm/` – verifier only, no NSM. Stateless; replay-detection gap documented. JS API: `verifyReceipt(...)`. |
+| CLI Tool | `crates/veriai-cli/` – `generate`, `inspect`, and `verify` with optional session state. |
+| Docker/Nitro Reference | `Dockerfile` for the verifier service and `deploy/nitro/` for the measured chat proxy. |
+| CI | GitHub Actions: format, Clippy, workspace tests, WASM build/size check, and real-hardware release compilation. |
+| Proxy Reference Example | `examples/01-chat-demo/` locally and `deploy/nitro/` for the measured AWS deployment. |
 
 ---
 
@@ -254,7 +242,7 @@ CLIENT (Verifier)
     - `model‑hash`, `input‑hash`, `output‑hash` match expected. *Failure → respective hash mismatch.*
     - **(Stateful only — Rust SDK, not WASM):** `sequence‑num` (6004) is monotonic within the same **identity fingerprint** (hash of PCR0, PCR3, PCR4, module_id, cert fingerprint). If identity changes, sequence reset is allowed. *Failure → `SequenceNumberOutOfOrder` or `EnclaveIdentityChanged`.*
 
-### 8.3 Error Taxonomy (`src/error.rs`)
+### 8.3 Error Taxonomy (`crates/veriai-types/src/error.rs`)
 
 ```rust
 pub enum VerifyError {
@@ -277,7 +265,7 @@ pub enum VerifyError {
 
 ### 8.4 Identity Fingerprint Hashing
 
-Implement in `src/verify.rs`:
+The implementation lives in `crates/veriai-core/src/verify.rs`:
 
 ```rust
 fn compute_identity_fingerprint(doc: &AttestationDoc) -> [u8; 32] {
@@ -358,9 +346,9 @@ const result = verify_receipt(
 | **No boot_id field** | ✅ Identity fingerprint (PCR0, PCR3, PCR4, module_id, cert chain) hashed — Rust SDK only. |
 | **Nonce lifecycle ambiguous** | ✅ Per‑inference attestation; no caching. |
 | **Attestation doc timestamp not checked** | ✅ Validate doc timestamp (ms) and claim 6007 (seconds). |
-| **I/O fabrication by operator** | ⚠️ Only fully mitigated in proxy deployment mode; library mode does not close this gap. Documented prominently (Section 1.2), and a runnable proxy reference example is now in scope for v1 rather than a stub. |
-| **Disk cache poisoning** | ✅ Cache is performance only; verification always recomputes from file. |
-| **WASM size >200KB** | ⚠️ Budget target with a defined contingency (Decision #15: pinned leaf cert if full chain validation doesn't fit) rather than an open-ended "split if needed." |
+| **I/O fabrication by operator** | ⚠️ Only addressed by the measured proxy deployment; library mode does not close this gap. |
+| **Model replacement after startup** | ⚠️ Local processes must protect the configured model file. Nitro deployment relies on PCR0 covering the model and proxy image; the chat demo does not rehash the file for every request. |
+| **WASM size >200KB** | ⚠️ Current build is 308 KB gzipped under a 350 KB CI ceiling; the original 200 KB target remains open. |
 | **X.509 cert chain in WASM** | Budget 2 weeks; use well‑audited crates; check dependencies early; contingency plan defined above if budget is missed. |
 | **WASM has no replay/reboot detection** | ⚠️ New: documented as a stated limitation (Decision #14), not silently deferred. Integrators choosing WASM-only verification should know they're accepting weaker guarantees. |
 | **Market-validation citation was factually wrong (v10.2)** | ✅ Corrected in Section 1.4 / 2 — replaced with the actual relevant competitor (Eigen Labs' EigenCloud/EigenAI) instead of an unrelated acquisition. |
@@ -381,13 +369,16 @@ const result = verify_receipt(
 
 ---
 
-## 12. Immediate Next Steps
+## 12. Historical next steps
+
+The following list is retained as planning history. It is not a current
+implementation checklist; verify status against the repository before using it.
 
 1. **Real Nitro experiment** – capture an attestation doc, parse it, save as `real-nitro-attestation.cbor`, confirm PCR0 size (48 bytes), timestamp format (uint64 ms), and certificate chain. (Day 1)
 2. **Write `docs/SPEC.md`** – incorporate the final CDDL, 6‑step flow, identity fingerprint hashing, timestamp conversion, and the library-mode-vs-proxy-mode security distinction (Section 1.2) up front. (Day 2)
-3. **`cargo init veriai-sdk --lib`** – add feature flags, `compile_error!` guard, and `src/error.rs`. (Day 2)
+3. **`cargo init veriai-sdk --lib`** – historical repository bootstrap step; the current workspace is already split into crates. (Day 2)
 4. **Generate mock certificates** – `tests/fixtures/mock-aws-root.pem` & key. (Day 3)
-5. **Write `src/nsm/schema.rs`** – pure CBOR parser. (Week 1)
+5. **Write `src/nsm/schema.rs`** – historical single-crate path; the current implementation lives under `crates/`. (Week 1)
 6. **Set up CI** – including WASM gzipped size check. (Day 3)
 7. **Evaluate WASM deps** – run `cargo tree`, ensure no bloated dependencies, and make the pinned-leaf-cert-vs-full-chain call (Decision #15) by end of Week 1 rather than discovering it late. (Week 1)
 8. **Build the proxy reference example as a working demo**, not a stub — this is the only deployment mode that delivers the core value proposition, so it needs to be provable early. (Weeks 2–4)
@@ -396,7 +387,3 @@ const result = verify_receipt(
 ---
 
 **Status: technically ready to build. Business case is honestly thin — proceed as a low-cost bet on becoming a reference implementation, not as a validated go-to-market.**
-
-```bash
-cargo init veriai-sdk --lib
-```

@@ -11,7 +11,7 @@ In Library Mode, the SDK is imported by the host application. The host calls the
 
 ### 1.2 Proxy Mode (Secure)
 In Proxy Mode, VeriAI runs as an intercepting proxy inside the secure AWS Nitro Enclave. All inference requests must pass through this proxy.
-* **Guarantee**: The proxy itself intercepts the model file (mmap), calculates the hash, catches the inputs, forwards them to the model, catches the outputs, and generates the attestation document with binding report data.
+* **Guarantee**: The proxy owns the runtime process, hashes the configured model file during initialization, canonicalizes the request, records the exact runtime output, and generates the attestation document with binding report data. In Nitro, PCR0 must cover the model and proxy image so they cannot be swapped after startup.
 * **Security boundary**: Because the proxy binary is included in the enclave's PCR0, the client can verify that the proxy is running and managing the I/O. This is the mode to use when operator fabrication is in scope.
 
 ---

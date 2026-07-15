@@ -13,7 +13,7 @@ This is a working list of security risks and mitigations in the repository. It i
 | **SEC-02B**| Attestation Receipt Replay | Critical | Valid old receipts accepted forever | **Implemented in code** (maximum receipt age and timestamp checks) |
 | **SEC-03** | Enclave Private Key Lifecycle Protection | Critical | Key theft if written to disk or cloned in memory | **Partially implemented** (`SigningKey` zeroization enabled; locked memory and core-dump policy remain deployment work) |
 | **SEC-04** | Resource Exhaustion (OOM) via CBOR/COSE | High | Denial of service via malicious large files | **Implemented in code** (receipt and HTTP body limits) |
-| **SEC-05** | Cache Poisoning / Symlink Attacks | High | Privilege escalation, file overwrite, or write corruption | **Partially implemented** (metadata cache removed; replay state uses create-new temporary files and atomic replacement) |
+| **SEC-05** | Replay State File / Symlink Attacks | High | Privilege escalation, file overwrite, or write corruption | **Partially implemented** (metadata cache removed; replay state uses create-new temporary files and atomic replacement) |
 | **SEC-06** | Algorithm Agility Attacks | High | Downgrade to `none` or weaker signatures | **Partially implemented** (protected algorithms and content type checked; unknown critical headers remain follow-up) |
 | **SEC-07** | Certificate Extension Validation | High | Impersonation using client auth certs | **Implemented in code** (checks `basicConstraints CA:true` on intermediates) |
 | **SEC-08** | Root Certificate Pinning Brittleness | High | Service breakdown on AWS root CA rotations | **Follow-up** (support controlled embedded CA fingerprint sets) |
@@ -24,7 +24,7 @@ This is a working list of security risks and mitigations in the repository. It i
 | **SEC-13** | Memory Leakage & Exposure | Medium | Key leak through core dumps, debugging, or swap | **Follow-up** (use `mlock` and disable core dumps) |
 | **SEC-14** | Dependency Supply Chain | Medium | Upstream library security vulnerabilities | **Follow-up** (add cargo audit, deny, and vet to CI) |
 | **SEC-15** | Merkle Tree Odd-Node Duplication | Medium | Hash collision vulnerabilities during inclusion proofs | **Documented** (the current hash is not an inclusion proof) |
-| **SEC-16** | Model Hash Cache Metadata Trust | Medium | Swapped-out model files via touched file metadata | **Implemented in code** (model files are rehashed; metadata-only cache removed) |
+| **SEC-16** | Model Replacement After Startup | Medium | A local model file can be swapped after the startup hash | **Partially implemented** (metadata-only cache removed; Nitro PCR0 must protect the model and proxy image) |
 | **SEC-17** | Weak Trusted Roots Verification Path | Low | Defense-in-depth bypass if mixed roots list provided | **Documented** (callers must populate trusted roots correctly) |
 | **SEC-18** | WASM Size Budget | Medium | Larger browser download and startup cost | **Follow-up** (full-chain build is below 350 KB gzipped but above the 200 KB planning target) |
 
@@ -51,7 +51,7 @@ This is a working list of security risks and mitigations in the repository. It i
 
 ### 2.3 REPORTDATA Input Ambiguity Protection (SEC-09)
 - **Problem**: Concatenating variables `version || domain || key` can result in input ambiguity where different configurations serialize to the identical byte stream.
-- **Mitigation**: CBOR encode the properties as a structured array before hashing:
+- **Follow-up**: Change the binding input to a structured encoding before hashing:
   ```rust
   // SHA-512(CBOR([version, domain, pubkey]))
   ```
@@ -65,21 +65,27 @@ This is a working list of security risks and mitigations in the repository. It i
 
 ### 2.5 Private Key Lifecycle (SEC-03, SEC-13)
 - **Problem**: Ephemeral signing keys could leak via core dumps, memory pages, or cloning.
-- **Mitigation**:
-  - Enforce ownership and wrap keys in `Zeroizing` wrappers to scrub memory pages on `drop`.
-  - Pin pages with `mlock` and disable core dumps. *Note: AWS Nitro Enclave isolation helps, but memory hygiene remains essential.*
+- **Current state**: `ed25519-dalek` zeroizes the receipt signing key when it is
+  dropped. Locked memory and core-dump policy remain deployment work. AWS Nitro
+  Enclave isolation helps, but does not replace memory hygiene.
 
 ### 2.6 Algorithm Agility & Downgrade Prevention (SEC-06)
 - **Problem**: Downgrade attacks or ignoring critical headers could bypass verification constraints.
-- **Mitigation**: Validate the `alg` identifier in protected headers, reject unprotected `alg` declarations, and fail on any unknown critical (`crit`) header elements.
+- **Current state**: The verifier validates the protected `alg`, rejects
+  unprotected `alg` declarations, and checks the content type. Unknown critical
+  (`crit`) header handling remains follow-up work.
 
 ### 2.7 Merkle Tree Duplicate Node Protection (SEC-15)
 - **Problem**: The current Merkle Tree implementation duplicates odd nodes (`hashing.rs`), replicating the Bitcoin CVE-2012-2459 vulnerability. If inclusion proofs are introduced later, this creates collision vectors.
 - **Mitigation**: Promote the odd node directly up the tree level instead of duplicating.
 
 ### 2.8 Model hashing (SEC-16)
-- **Problem**: A metadata-only cache can return a stale model identity after a file replacement.
-- **Mitigation**: The current implementation reads and hashes the model file on every call.
+- **Problem**: A model file can be replaced after the chat demo computes its startup
+  identity, unless the deployment protects the file.
+- **Current state**: The metadata-only cache was removed. The chat demo hashes the
+  configured file during runtime initialization; the Nitro reference image relies
+  on PCR0 covering the model and proxy image. A local process should treat the model
+  path as immutable after startup.
 
 ### 2.9 Trusted Roots Validation Loop (SEC-17)
 - **Problem**: Loop over `trusted_roots` breaks on the first validating root, leaving defense-in-depth security entirely up to the caller to maintain a clean root set.
@@ -99,11 +105,10 @@ A static analysis scan was run across the workspace crates to identify potential
 
 ---
 
-## 4. Security Regression Test Suite
+## 4. Security regression tests
 
-To transition this security review to a verified audit standard, the following test suites must be configured in `tests/`:
-
-1. **Malformed Receipt Suite**: Tests asserting error returns on truncated payload byte vectors, malformed CBOR objects, and size limit breaches.
-2. **Chain Validity Suite**: Tests verifying rejection of expired intermediate/leaf certs and algorithm swaps.
-3. **Replay Validation Suite**: Tests evaluating horizontal replay attacks and restart resets.
-4. **Binding Integrations**: Asserting rejection of tampered `REPORTDATA` and incorrect `PCR0` measurements.
+The workspace currently covers malformed and oversized receipts, invalid
+signatures, certificate validity and CA constraints, timestamp checks, replay,
+payload tampering, PCR0, and REPORTDATA binding. The remaining test work is
+primarily for multi-process replay storage, unknown critical headers, and the
+real Nitro deployment path.

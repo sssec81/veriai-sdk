@@ -1,8 +1,9 @@
 # AWS Nitro deployment reference
 
 These files build the real-hardware chat proxy into an Enclave Image File
-(EIF). The model, `llama-cli`, proxy binary, and vsock relay are all measured by
-PCR0 because they are inside the image.
+(EIF). The model, `llama-cli`, proxy binary, and enclave-side vsock relay are
+measured by PCR0 because they are inside the image. The parent-side relay is
+outside the enclave and is not part of PCR0.
 
 This must be run on a Linux EC2 parent instance that supports Nitro Enclaves.
 Install Docker, the Nitro CLI, the enclave allocator service, and `socat` on the
@@ -37,7 +38,18 @@ directly.
 
 The enclave returns a base64 COSE receipt but does not verify its own receipt.
 Run `verifier-service` outside the enclave with the AWS Nitro trusted root and
-the PCR0 from `measurements.json`.
+the PCR0 from `measurements.json`:
+
+```bash
+export TRUSTED_ROOT_CERT_PATH=/path/to/aws-nitro-root.pem
+export EXPECTED_PCR0=<96-hex-characters-from-measurements.json>
+export STATE_FILE_PATH=/var/lib/veriai/replay-state.json
+cargo run -p verifier-service --no-default-features --features real-hardware
+```
+
+The verifier listens on port 8080 by default. The parent relay forwards the
+proxy request to the enclave on port 3000; place authentication and TLS in
+front of the parent relay before exposing it outside the host.
 
 ## Security and reproducibility notes
 
