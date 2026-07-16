@@ -12,16 +12,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Sources
-        uses: actions/checkout@v3
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Install Stable Rust Toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6d653acede5e235d9d1e9be3fc7ab9532a2a8f21 # stable
         with:
           components: rustfmt, clippy
           targets: wasm32-unknown-unknown
 
       - name: Cache Cargo Dependencies
-        uses: actions/cache@v3
+        uses: actions/cache@0c45773b623bea8c8e75f6c82b208c3cf94ea4f9 # v4.0.2
         with:
           path: |
             ~/.cargo/bin/
@@ -39,6 +39,21 @@ jobs:
 
       - name: Run Workspace Tests
         run: cargo test --workspace
+
+      - name: Install dependency-security tools
+        run: |
+          cargo install cargo-audit@0.22.2 --locked
+          cargo install cargo-deny@0.20.2 --locked
+          cargo install cargo-vet@0.10.2 --locked
+
+      - name: Audit known dependency vulnerabilities
+        run: cargo audit
+
+      - name: Enforce dependency policy
+        run: cargo deny check
+
+      - name: Verify dependency audits
+        run: cargo vet --locked
 
       - name: Build WASM Verifier
         run: cargo build -p veriai-wasm --target wasm32-unknown-unknown --release

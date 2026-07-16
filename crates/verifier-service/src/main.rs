@@ -3,6 +3,8 @@ use axum::{
     extract::State,
     routing::{get, post},
 };
+use fs2::FileExt;
+use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -21,6 +23,7 @@ use veriai_core::verify::Verifier;
 use veriai_types::VerificationResult;
 
 const MAX_REQUEST_BODY: usize = 128 * 1024;
+const CHALLENGE_TTL_SECONDS: u64 = 300;
 static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone)]
@@ -29,9 +32,10 @@ struct AppState {
     verifier: Arc<Verifier>,
     replay_state_path: Option<PathBuf>,
     replay_write_lock: Arc<tokio::sync::Mutex<()>>,
+    require_issued_challenge: bool,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 struct VerifyRequest {
     receipt: String,     // Base64 or Hex encoded receipt bytes
     model_hash: String,  // Hex encoded model hash
@@ -51,6 +55,29 @@ struct VersionResponse {
     api_version: &'static str,
     version: &'static str,
     receipt_format: &'static str,
+}
+
+#[derive(Serialize, Debug)]
+struct ChallengeResponse {
+    nonce: String,
+    expires_at: u64,
+}
+
+struct ChallengeReservation {
+    available_path: PathBuf,
+    reserved_path: PathBuf,
+}
+
+impl ChallengeReservation {
+    fn restore(self) -> Result<(), String> {
+        std::fs::rename(self.reserved_path, self.available_path)
+            .map_err(|e| format!("failed to restore challenge: {e}"))
+    }
+
+    fn consume(self) -> Result<(), String> {
+        std::fs::remove_file(self.reserved_path)
+            .map_err(|e| format!("failed to consume challenge: {e}"))
+    }
 }
 
 #[derive(Serialize, Debug)]
@@ -92,11 +119,13 @@ async fn main() {
         verifier: Arc::new(verifier),
         replay_state_path,
         replay_write_lock: Arc::new(tokio::sync::Mutex::new(())),
+        require_issued_challenge: cfg!(feature = "real-hardware"),
     };
 
     let app = Router::new()
         .route("/health", get(health_handler))
         .route("/version", get(version_handler))
+        .route("/v1/challenge", post(challenge_handler))
         .route("/v1/verify", post(verify_handler))
         .route("/verify", post(verify_handler))
         .layer(TraceLayer::new_for_http())
@@ -128,6 +157,54 @@ async fn version_handler() -> Json<VersionResponse> {
         version: env!("CARGO_PKG_VERSION"),
         receipt_format: "v1",
     })
+}
+
+async fn challenge_handler(
+    State(state): State<AppState>,
+) -> Result<Json<ChallengeResponse>, (axum::http::StatusCode, Json<ErrorResponse>)> {
+    let state_path = state
+        .replay_state_path
+        .as_deref()
+        .ok_or_else(|| api_replay_error("STATE_FILE_PATH is required for issued challenges"))?;
+    let expires_at = unix_seconds()
+        .map_err(replay_state_http_error)?
+        .checked_add(CHALLENGE_TTL_SECONDS)
+        .ok_or_else(|| api_replay_error("challenge expiry overflow"))?;
+    let directory = challenge_directory(state_path)?;
+    std::fs::create_dir_all(&directory).map_err(replay_state_http_error)?;
+    #[cfg(unix)]
+    std::fs::set_permissions(
+        &directory,
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    )
+    .map_err(replay_state_http_error)?;
+
+    for _ in 0..8 {
+        let mut nonce = [0u8; 32];
+        OsRng.fill_bytes(&mut nonce);
+        let path = directory.join(hex::encode(nonce));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut file) => {
+                use std::io::Write;
+                #[cfg(unix)]
+                file.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o600))
+                    .map_err(replay_state_http_error)?;
+                writeln!(file, "{expires_at}").map_err(replay_state_http_error)?;
+                file.sync_all().map_err(replay_state_http_error)?;
+                return Ok(Json(ChallengeResponse {
+                    nonce: hex::encode(nonce),
+                    expires_at,
+                }));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(replay_state_http_error(error)),
+        }
+    }
+    Err(api_replay_error("failed to allocate a unique challenge"))
 }
 
 async fn verify_handler(
@@ -194,11 +271,46 @@ async fn verify_handler(
         )
     })?;
 
-    // File-backed replay state is a single transaction from verification
-    // through persistence. This prevents concurrent requests from observing an
-    // in-memory sequence number that has not been durably recorded yet.
+    // A stable sibling lock file coordinates independent verifier-service
+    // processes on one host.  Never lock the state file itself: atomic rename
+    // would replace its inode and invalidate an advisory lock.
     let replay_guard = if state.replay_state_path.is_some() {
         Some(state.replay_write_lock.lock().await)
+    } else {
+        None
+    };
+    let replay_file_lock = if let Some(path) = state.replay_state_path.as_deref() {
+        let lock_path = replay_lock_path(path)?;
+        let lock = tokio::task::spawn_blocking(move || acquire_replay_lock(&lock_path))
+            .await
+            .map_err(replay_state_http_error)?
+            .map_err(replay_state_http_error)?;
+        // A different process may have committed while this process waited.
+        // Reload inside the inter-process transaction before sequence checking.
+        if path.exists() {
+            state
+                .verifier
+                .set_state(load_replay_state(path).map_err(replay_state_http_error)?)
+                .map_err(replay_state_http_error)?;
+        }
+        Some(lock)
+    } else {
+        None
+    };
+    let challenge_reservation = if state.require_issued_challenge {
+        let path = state
+            .replay_state_path
+            .as_deref()
+            .ok_or_else(|| api_replay_error("STATE_FILE_PATH is required in real-hardware mode"))?;
+        Some(reserve_challenge(path, nonce).map_err(|error| {
+            (
+                axum::http::StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    code: "invalid_challenge",
+                    error,
+                }),
+            )
+        })?)
     } else {
         None
     };
@@ -242,8 +354,16 @@ async fn verify_handler(
             )
         })?;
 
-    if result.valid
-        && let Some(path) = state.replay_state_path.as_deref()
+    if !result.valid {
+        if let Some(reservation) = challenge_reservation {
+            reservation.restore().map_err(replay_state_http_error)?;
+        }
+        drop(replay_file_lock);
+        drop(replay_guard);
+        return Ok(Json(result));
+    }
+
+    if let Some(path) = state.replay_state_path.as_deref()
         && let Err(error) = persist_replay_state_or_rollback(
             &state.verifier,
             path,
@@ -251,6 +371,9 @@ async fn verify_handler(
         )
         .await
     {
+        if let Some(reservation) = challenge_reservation {
+            reservation.restore().map_err(replay_state_http_error)?;
+        }
         tracing::error!("Failed to persist replay state: {error}");
         return Err((
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
@@ -260,10 +383,102 @@ async fn verify_handler(
             }),
         ));
     }
+    if let Some(reservation) = challenge_reservation {
+        reservation.consume().map_err(replay_state_http_error)?;
+    }
     drop(replay_guard);
+    drop(replay_file_lock);
 
     tracing::info!("Verification completed. Valid: {}", result.valid);
     Ok(Json(result))
+}
+
+fn replay_lock_path(path: &Path) -> Result<PathBuf, (axum::http::StatusCode, Json<ErrorResponse>)> {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| api_replay_error("state file path must end in a file name"))?;
+    Ok(path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(format!(".{name}.lock")))
+}
+
+fn acquire_replay_lock(path: &Path) -> Result<std::fs::File, String> {
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+        .map_err(|e| format!("failed to open replay lock: {e}"))?;
+    lock.lock_exclusive()
+        .map_err(|e| format!("failed to acquire replay lock: {e}"))?;
+    Ok(lock)
+}
+
+fn challenge_directory(
+    state_path: &Path,
+) -> Result<PathBuf, (axum::http::StatusCode, Json<ErrorResponse>)> {
+    let name = state_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| api_replay_error("state file path must end in a file name"))?;
+    Ok(state_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(format!(".{name}.challenges")))
+}
+
+fn unix_seconds() -> Result<u64, String> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .map_err(|e| format!("system clock error: {e}"))
+}
+
+fn reserve_challenge(state_path: &Path, nonce: [u8; 32]) -> Result<ChallengeReservation, String> {
+    let directory = challenge_directory(state_path).map_err(|(_, body)| body.0.error)?;
+    let available_path = directory.join(hex::encode(nonce));
+    let expires_at = std::fs::read_to_string(&available_path)
+        .map_err(|_| "challenge was not issued or was already consumed".to_string())?
+        .trim()
+        .parse::<u64>()
+        .map_err(|_| "challenge record is invalid".to_string())?;
+    if unix_seconds()? > expires_at {
+        let _ = std::fs::remove_file(&available_path);
+        return Err("challenge has expired".to_string());
+    }
+    let counter = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let reserved_path = directory.join(format!(
+        ".{}.{}.{}.reserved",
+        hex::encode(nonce),
+        std::process::id(),
+        counter
+    ));
+    std::fs::rename(&available_path, &reserved_path)
+        .map_err(|_| "challenge was concurrently consumed".to_string())?;
+    Ok(ChallengeReservation {
+        available_path,
+        reserved_path,
+    })
+}
+
+fn api_replay_error(message: impl Into<String>) -> (axum::http::StatusCode, Json<ErrorResponse>) {
+    (
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+        Json(ErrorResponse {
+            code: "replay_state_error",
+            error: message.into(),
+        }),
+    )
+}
+
+fn replay_state_http_error(
+    error: impl std::fmt::Display,
+) -> (axum::http::StatusCode, Json<ErrorResponse>) {
+    tracing::error!("Replay state failure: {error}");
+    api_replay_error("Replay state is unavailable")
 }
 
 fn configured_provider() -> Arc<dyn AttestationProvider> {
@@ -281,11 +496,23 @@ fn load_trusted_root() -> Result<String, String> {
     if let Ok(pem) = std::env::var("TRUSTED_ROOT_CERT_PEM")
         && pem.contains("BEGIN CERTIFICATE")
     {
+        validate_configured_roots(&pem)?;
         return Ok(pem);
     }
     let path = std::env::var("TRUSTED_ROOT_CERT_PATH")
         .map_err(|_| "set TRUSTED_ROOT_CERT_PEM or TRUSTED_ROOT_CERT_PATH".to_string())?;
-    std::fs::read_to_string(path).map_err(|e| format!("failed to read trusted root: {e}"))
+    let pem =
+        std::fs::read_to_string(path).map_err(|e| format!("failed to read trusted root: {e}"))?;
+    validate_configured_roots(&pem)?;
+    Ok(pem)
+}
+
+fn validate_configured_roots(pem: &str) -> Result<(), String> {
+    #[cfg(feature = "real-hardware")]
+    veriai_attestation::validate_aws_nitro_root_pem(pem)?;
+    #[cfg(not(feature = "real-hardware"))]
+    let _ = pem;
+    Ok(())
 }
 
 fn load_expected_pcr0() -> Result<Vec<u8>, String> {
@@ -401,10 +628,16 @@ async fn persist_replay_state_or_rollback(
 
 #[cfg(test)]
 mod tests {
-    use super::{load_replay_state, persist_replay_state, persist_replay_state_or_rollback};
+    use super::{
+        AppState, VerifyRequest, challenge_handler, load_replay_state, persist_replay_state,
+        persist_replay_state_or_rollback, verify_handler,
+    };
+    use axum::{Json, extract::State};
+    use base64ct::{Base64, Encoding};
     use std::collections::HashMap;
     use std::sync::Arc;
     use veriai_attestation::mock::MockAttestationProvider;
+    use veriai_core::receipt::ReceiptGenerator;
     use veriai_core::verify::Verifier;
 
     const MOCK_ROOT_PEM: &str = include_str!("../../../tests/fixtures/mock-aws-root.pem");
@@ -448,5 +681,80 @@ mod tests {
                 .is_err()
         );
         assert_eq!(verifier.get_state().unwrap().unwrap(), previous);
+    }
+
+    fn app_state(path: std::path::PathBuf, require_issued_challenge: bool) -> AppState {
+        AppState {
+            expected_pcr0: Arc::from(vec![0u8; 48]),
+            verifier: Arc::new(
+                Verifier::from_pem(
+                    Arc::new(MockAttestationProvider::new()),
+                    MOCK_ROOT_PEM,
+                    true,
+                )
+                .unwrap(),
+            ),
+            replay_state_path: Some(path),
+            replay_write_lock: Arc::new(tokio::sync::Mutex::new(())),
+            require_issued_challenge,
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn two_service_instances_accept_a_receipt_only_once() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("state.json");
+        let provider = Arc::new(MockAttestationProvider::new());
+        let generator = ReceiptGenerator::new(provider);
+        let receipt = generator
+            .generate_receipt([1; 32], [2; 32], [3; 32], [4; 32])
+            .await
+            .unwrap();
+        let request = VerifyRequest {
+            receipt: Base64::encode_string(&receipt),
+            model_hash: hex::encode([1; 32]),
+            input_hash: hex::encode([2; 32]),
+            output_hash: hex::encode([3; 32]),
+            nonce: hex::encode([4; 32]),
+        };
+        let first = verify_handler(State(app_state(path.clone(), false)), Json(request.clone()));
+        let second = verify_handler(State(app_state(path, false)), Json(request));
+        let (first, second) = tokio::join!(first, second);
+        let accepted = [first, second]
+            .into_iter()
+            .filter(|result| result.as_ref().is_ok_and(|json| json.0.valid))
+            .count();
+        assert_eq!(accepted, 1);
+    }
+
+    #[tokio::test]
+    async fn issued_challenge_is_consumed_once() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("state.json");
+        let response = challenge_handler(State(app_state(path.clone(), true)))
+            .await
+            .unwrap();
+        let nonce: [u8; 32] = hex::decode(&response.nonce).unwrap().try_into().unwrap();
+        let generator = ReceiptGenerator::new(Arc::new(MockAttestationProvider::new()));
+        let receipt = generator
+            .generate_receipt([1; 32], [2; 32], [3; 32], nonce)
+            .await
+            .unwrap();
+        let request = VerifyRequest {
+            receipt: Base64::encode_string(&receipt),
+            model_hash: hex::encode([1; 32]),
+            input_hash: hex::encode([2; 32]),
+            output_hash: hex::encode([3; 32]),
+            nonce: hex::encode(nonce),
+        };
+        let first = verify_handler(State(app_state(path.clone(), true)), Json(request.clone()))
+            .await
+            .unwrap();
+        assert!(first.valid);
+        assert!(
+            verify_handler(State(app_state(path, true)), Json(request))
+                .await
+                .is_err()
+        );
     }
 }

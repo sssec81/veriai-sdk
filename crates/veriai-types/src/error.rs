@@ -46,6 +46,8 @@ pub enum VerifyError {
 
     #[error("Client nonce does not match Nitro document nonce")]
     NonceMismatch,
+    #[error("Receipt sequence number is exhausted")]
+    SequenceNumberExhausted,
 
     #[error("Sequence number is out of order (not monotonic)")]
     SequenceNumberOutOfOrder,

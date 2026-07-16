@@ -1,6 +1,10 @@
 #!/bin/bash
 set -euo pipefail
 
+# The receipt signing key is intentionally memory-only.  Do not leave it in a
+# core file if the enclave process crashes.
+ulimit -c 0
+
 /usr/local/bin/chat-demo &
 chat_pid=$!
 

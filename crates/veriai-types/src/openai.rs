@@ -9,6 +9,7 @@ pub struct Message {
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct InferenceRequest {
+    pub model: String,
     pub messages: Vec<Message>,
     pub temperature: Option<f32>,
 }
@@ -35,6 +36,7 @@ pub struct RuntimeMetadata {
 }
 
 #[derive(Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct ChatCompletionRequest {
     pub model: String,
     pub messages: Vec<Message>,

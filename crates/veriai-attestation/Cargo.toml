@@ -2,6 +2,8 @@
 name = "veriai-attestation"
 version = "0.1.0"
 edition = "2024"
+license.workspace = true
+publish.workspace = true
 
 [features]
 default = ["mock-hardware"]
@@ -19,4 +21,5 @@ serde_bytes = "0.11"
 async-trait = "0.1"
 aws-nitro-enclaves-nsm-api = { version = "0.4.0", optional = true }
 x509-cert = "0.2"
-
+sha2 = "0.10"
+hex = "0.4"

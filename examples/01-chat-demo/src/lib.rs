@@ -154,14 +154,17 @@ fn configured_runtime() -> Result<RuntimeConfig, String> {
 fn configured_root_pem() -> Result<String, String> {
     #[cfg(feature = "real-hardware")]
     {
-        if let Ok(pem) = std::env::var("TRUSTED_ROOT_CERT_PEM") {
-            return Ok(pem);
-        }
-        let path = std::env::var("TRUSTED_ROOT_CERT_PATH").map_err(|_| {
-            "TRUSTED_ROOT_CERT_PATH or TRUSTED_ROOT_CERT_PEM is required".to_string()
-        })?;
-        return std::fs::read_to_string(path)
-            .map_err(|error| format!("failed to read trusted root certificate: {error}"));
+        let pem = if let Ok(pem) = std::env::var("TRUSTED_ROOT_CERT_PEM") {
+            pem
+        } else {
+            let path = std::env::var("TRUSTED_ROOT_CERT_PATH").map_err(|_| {
+                "TRUSTED_ROOT_CERT_PATH or TRUSTED_ROOT_CERT_PEM is required".to_string()
+            })?;
+            std::fs::read_to_string(path)
+                .map_err(|error| format!("failed to read trusted root certificate: {error}"))?
+        };
+        veriai_attestation::validate_aws_nitro_root_pem(&pem)?;
+        return Ok(pem);
     }
     #[cfg(not(feature = "real-hardware"))]
     {
@@ -216,6 +219,7 @@ async fn chat_completions_handler(
     }
 
     let inference_req = InferenceRequest {
+        model: payload.model,
         messages: payload.messages,
         temperature: payload.temperature,
     };
@@ -226,6 +230,10 @@ async fn chat_completions_handler(
             error.to_string(),
         )
     })?;
+    // A production caller must supply the challenge before work begins.  A
+    // server-generated nonce is useful only for the mock/demo endpoint: a
+    // client that did not choose it cannot use it as a freshness challenge.
+    let client_nonce = request_nonce(&headers)?;
     let inference_permit = state
         .inference_slots
         .clone()
@@ -252,8 +260,6 @@ async fn chat_completions_handler(
 
     let input_hash: [u8; 32] = Sha256::digest(&canonical_input).into();
     let output_hash: [u8; 32] = Sha256::digest(inference_result.content.as_bytes()).into();
-    let client_nonce = request_nonce(&headers)?;
-
     let receipt_bytes = state
         .generator
         .generate_receipt(state.model_hash, input_hash, output_hash, client_nonce)
@@ -321,7 +327,21 @@ async fn chat_completions_handler(
 }
 
 fn request_nonce(headers: &HeaderMap) -> Result<[u8; 32], (StatusCode, Json<ErrorResponse>)> {
+    request_nonce_with_policy(headers, cfg!(feature = "real-hardware"))
+}
+
+fn request_nonce_with_policy(
+    headers: &HeaderMap,
+    require_client_nonce: bool,
+) -> Result<[u8; 32], (StatusCode, Json<ErrorResponse>)> {
     let Some(value) = headers.get("x-veriai-nonce") else {
+        if require_client_nonce {
+            return Err(api_error(
+                StatusCode::BAD_REQUEST,
+                "missing_nonce",
+                "X-VeriAI-Nonce is required in real-hardware mode",
+            ));
+        }
         let mut nonce = [0u8; 32];
         OsRng.fill_bytes(&mut nonce);
         return Ok(nonce);
@@ -364,4 +384,16 @@ fn api_error(
             },
         }),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::request_nonce_with_policy;
+    use axum::http::{HeaderMap, StatusCode};
+
+    #[test]
+    fn production_policy_rejects_missing_nonce() {
+        let error = request_nonce_with_policy(&HeaderMap::new(), true).unwrap_err();
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+    }
 }

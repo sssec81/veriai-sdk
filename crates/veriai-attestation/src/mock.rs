@@ -76,7 +76,8 @@ impl AttestationProvider for MockAttestationProvider {
             digest: "SHA384".to_string(),
             pcrs,
             certificate: leaf_der,
-            cabundle: vec![intermediate_der, root_der],
+            // Nitro specifies the CA bundle root-first.
+            cabundle: vec![root_der, intermediate_der],
             public_key: public_key.map(|k| k.to_vec()),
             user_data: user_data.map(|d| d.to_vec()),
             nonce: nonce.map(|n| n.to_vec()),

@@ -1,5 +1,5 @@
 use base64ct::Encoding;
-use coset::{CborSerializable, CoseSign1};
+use coset::{CborSerializable, CoseSign1, RegisteredLabel, iana};
 use p384::ecdsa::signature::Signer;
 use p384::pkcs8::DecodePrivateKey;
 use std::sync::Arc;
@@ -11,6 +11,62 @@ use veriai_core::verify::Verifier;
 use veriai_types::{AttestationDoc, VeriClaims};
 
 const MOCK_ROOT_PEM: &str = include_str!("../../../tests/fixtures/mock-aws-root.pem");
+
+#[tokio::test]
+async fn test_rejects_unknown_critical_receipt_header() {
+    let provider = Arc::new(MockAttestationProvider::new());
+    let generator = ReceiptGenerator::new(provider.clone());
+    let verifier = Verifier::from_pem(provider, MOCK_ROOT_PEM, false).unwrap();
+    let mut receipt = CoseSign1::from_slice(
+        &generator
+            .generate_receipt([1; 32], [2; 32], [3; 32], [4; 32])
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    receipt
+        .protected
+        .header
+        .crit
+        .push(RegisteredLabel::<iana::HeaderParameter>::Text(
+            "unknown".to_string(),
+        ));
+    receipt.protected.original_data = None;
+    let result = verifier
+        .verify(
+            &receipt.to_vec().unwrap(),
+            [1; 32],
+            [2; 32],
+            [3; 32],
+            [4; 32],
+            &[0; 48],
+        )
+        .await;
+    assert_eq!(
+        result,
+        Err(veriai_types::error::VerifyError::InvalidProtectedHeader)
+    );
+}
+
+#[tokio::test]
+async fn test_rejects_unknown_critical_attestation_header() {
+    let provider = MockAttestationProvider::new();
+    let document = provider.generate(None, None, None).await.unwrap();
+    let mut cose = CoseSign1::from_slice(&document).unwrap();
+    cose.protected
+        .header
+        .crit
+        .push(RegisteredLabel::<iana::HeaderParameter>::Text(
+            "unknown-attestation-header".to_string(),
+        ));
+    cose.protected.original_data = None;
+    let root_body: String = MOCK_ROOT_PEM
+        .lines()
+        .filter(|line| !line.starts_with("-----"))
+        .collect();
+    let root = base64ct::Base64::decode_vec(&root_body).unwrap();
+    assert!(verify_attestation_doc(&cose.to_vec().unwrap(), &root, SystemTime::now()).is_err());
+}
 
 #[tokio::test]
 async fn test_adversarial_valid_receipt() {
@@ -442,7 +498,7 @@ async fn test_adversarial_conflicting_content_type_headers() {
         .await;
     assert!(matches!(
         result,
-        Err(veriai_types::error::VerifyError::InvalidContentType)
+        Err(veriai_types::error::VerifyError::InvalidProtectedHeader)
     ));
 }
 
@@ -547,7 +603,7 @@ async fn test_adversarial_non_ca_intermediate() {
         digest: "SHA384".to_string(),
         pcrs,
         certificate: leaf_der.clone(),
-        cabundle: vec![leaf_der.clone(), root_der.clone()],
+        cabundle: vec![root_der.clone(), leaf_der.clone()],
         public_key: None,
         user_data: None,
         nonce: None,

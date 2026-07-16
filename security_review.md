@@ -9,20 +9,20 @@ This is a working list of security risks and mitigations in the repository. It i
 | ID | Title | Severity | Impact | Mitigation Status |
 | :--- | :--- | :---: | :--- | :--- |
 | **SEC-01** | Missing Certificate Validity Checks | High | Expired leaf or intermediate certs accepted | **Implemented in code** (checks validity period across entire chain) |
-| **SEC-02A**| Verifier State Replay (Reset/Scale) | Critical | Sequence bypass on verifier restart or horizontal scaling | **Partially implemented** (atomic file persistence for one process; shared transactional storage remains follow-up) |
+| **SEC-02A**| Verifier State Replay (Reset/Scale) | Critical | Sequence bypass on verifier restart or horizontal scaling | **Partially implemented** (durable state plus an inter-process lock on one host; a transactional shared store remains required for horizontal scaling) |
 | **SEC-02B**| Attestation Receipt Replay | Critical | Valid old receipts accepted forever | **Implemented in code** (maximum receipt age and timestamp checks) |
-| **SEC-03** | Enclave Private Key Lifecycle Protection | Critical | Key theft if written to disk or cloned in memory | **Partially implemented** (`SigningKey` zeroization enabled; locked memory and core-dump policy remain deployment work) |
+| **SEC-03** | Enclave Private Key Lifecycle Protection | Critical | Key theft if written to disk or cloned in memory | **Partially implemented** (`SigningKey` zeroization and enclave core-dump disablement are enabled; locked memory remains deployment work) |
 | **SEC-04** | Resource Exhaustion (OOM) via CBOR/COSE | High | Denial of service via malicious large files | **Implemented in code** (receipt and HTTP body limits) |
 | **SEC-05** | Replay State File / Symlink Attacks | High | Privilege escalation, file overwrite, or write corruption | **Partially implemented** (metadata cache removed; replay state uses create-new temporary files and atomic replacement) |
-| **SEC-06** | Algorithm Agility Attacks | High | Downgrade to `none` or weaker signatures | **Partially implemented** (protected algorithms and content type checked; unknown critical headers remain follow-up) |
+| **SEC-06** | Algorithm Agility Attacks | High | Downgrade to `none` or weaker signatures | **Implemented in code** (protected algorithm/content type required; unprotected and critical headers rejected) |
 | **SEC-07** | Certificate Extension Validation | High | Impersonation using client auth certs | **Implemented in code** (checks `basicConstraints CA:true` on intermediates) |
-| **SEC-08** | Root Certificate Pinning Brittleness | High | Service breakdown on AWS root CA rotations | **Follow-up** (support controlled embedded CA fingerprint sets) |
-| **SEC-09** | Input Ambiguity in Key Binding | High | Concatenation prefix collision attacks | **Follow-up** (hash structured CBOR arrays instead of concatenation) |
+| **SEC-08** | Root Certificate Pinning Brittleness | High | Service breakdown on AWS root CA rotations | **Implemented in code** (compiled AWS G1 fingerprint allowlist; rotations require a reviewed release update) |
+| **SEC-09** | Input Ambiguity in Key Binding | High | Concatenation prefix collision attacks | **Not applicable** (the version, domain separator, and 32-byte key are fixed-width and unambiguous) |
 | **SEC-10** | Release Build Mock Mode Drift | High | Shipping mock hardware backend to production | **Implemented in code** (compile-time check outside tests) |
-| **SEC-11** | Missing Attestation Freshness Check | Critical | Replaying old valid attestation documents | **Implemented in code** (five-minute clock-skew window) |
-| **SEC-12** | Nonce Entropy Validation | High | Low-entropy or predictable nonces enabling replay | **Follow-up** (require nonces from a CSPRNG) |
+| **SEC-11** | Missing Attestation Freshness Check | Critical | Replaying old valid attestation documents | **Implemented in code** (timestamp window plus verifier-issued, expiring, one-time challenges in real-hardware service mode) |
+| **SEC-12** | Nonce Entropy Validation | High | Low-entropy or predictable nonces enabling replay | **Implemented for supplied flows** (demo and verifier challenge issuance use `OsRng`; real-hardware proxy requires a caller/verifier-issued nonce) |
 | **SEC-13** | Memory Leakage & Exposure | Medium | Key leak through core dumps, debugging, or swap | **Follow-up** (use `mlock` and disable core dumps) |
-| **SEC-14** | Dependency Supply Chain | Medium | Upstream library security vulnerabilities | **Follow-up** (add cargo audit, deny, and vet to CI) |
+| **SEC-14** | Dependency Supply Chain | Medium | Upstream library security vulnerabilities | **Implemented in CI configuration** (pinned `cargo audit`, `cargo deny`, and `cargo vet`; `serde_cbor` remains an explicitly visible unmaintained transitive dependency warning) |
 | **SEC-15** | Merkle Tree Odd-Node Duplication | Medium | Hash collision vulnerabilities during inclusion proofs | **Documented** (the current hash is not an inclusion proof) |
 | **SEC-16** | Model Replacement After Startup | Medium | A local model file can be swapped after the startup hash | **Partially implemented** (metadata-only cache removed; Nitro PCR0 must protect the model and proxy image) |
 | **SEC-17** | Weak Trusted Roots Verification Path | Low | Defense-in-depth bypass if mixed roots list provided | **Documented** (callers must populate trusted roots correctly) |
@@ -45,22 +45,19 @@ This is a working list of security risks and mitigations in the repository. It i
 - **Problem**: Signature chain verification validates keys but misses temporal constraints (validity period), key usages, and CA rotations.
 - **Mitigations**:
   1. **Temporal Chain Check**: Validate the `validity` window (NotBefore / NotAfter) on the leaf cert and all intermediate certs in the chain against system clock. **[Implemented & Verified]**
-  2. **Key Usage & EKU**: Verify `BasicConstraints` (checking `CA:true`), `KeyUsage`, and `ExtendedKeyUsage` properties. **[BasicConstraints CA:true Implemented & Verified]**
-  3. **CA Bundle Ordering**: Ensure that the chain validation walks the expected ordering (root-first vs leaf-first) as returned by AWS Nitro Enclaves to avoid verification bypasses. **[Documented & Verified leaf-to-root order against AWS specification]**
-  4. **Fingerprint Set CA Pinning**: Avoid automated root expansion; verify root certificate fingerprints against an embedded trusted CA set. **[Recommended]**
+  2. **Certificate constraints**: Verify leaf/CA `BasicConstraints`, applicable `KeyUsage`, path length, issuer/subject linkage, validity, signatures, and reject unsupported critical extensions. **[Implemented and regression-tested for the Nitro profile]**
+  3. **CA Bundle Ordering**: AWS provides `cabundle` root-first; validation reverses it while walking from leaf to root. **[Implemented]**
+  4. **Fingerprint Set CA Pinning**: Real-hardware verifier roots must match a compiled AWS Nitro G1 fingerprint allowlist. **[Implemented]**
 
-### 2.3 REPORTDATA Input Ambiguity Protection (SEC-09)
-- **Problem**: Concatenating variables `version || domain || key` can result in input ambiguity where different configurations serialize to the identical byte stream.
-- **Follow-up**: Change the binding input to a structured encoding before hashing:
-  ```rust
-  // SHA-512(CBOR([version, domain, pubkey]))
-  ```
+### 2.3 REPORTDATA input encoding (SEC-09)
+The current input is unambiguous: a one-byte version, fixed domain separator,
+and a fixed 32-byte Ed25519 key. Preserve it for receipt-format compatibility.
 
 ### 2.4 State Replay Protection & distributed Enclaves (SEC-02A, SEC-02B)
 - **Problem**: A verifier restart or multiple verifier instances can lose or split sequence state.
 - **Mitigations**:
-  1. **Single-process persistence**: `STATE_FILE_PATH` writes sequence state atomically and restores it on startup. Verification is rolled back if persistence fails.
-  2. **Distributed Sequence Store**: Use a transactional shared database before horizontal scaling.
+1. **Single-host persistence**: `STATE_FILE_PATH` writes sequence state atomically and uses a stable sibling advisory lock. State is reloaded, verified, and persisted while the lock is held.
+2. **Distributed Sequence Store**: Use a transactional shared database before horizontal scaling; filesystem locks are not a distributed protocol.
   3. **Receipt Expiration Check**: The verifier enforces a five-minute default maximum receipt age.
 
 ### 2.5 Private Key Lifecycle (SEC-03, SEC-13)
@@ -107,8 +104,9 @@ A static analysis scan was run across the workspace crates to identify potential
 
 ## 4. Security regression tests
 
-The workspace currently covers malformed and oversized receipts, invalid
-signatures, certificate validity and CA constraints, timestamp checks, replay,
-payload tampering, PCR0, and REPORTDATA binding. The remaining test work is
-primarily for multi-process replay storage, unknown critical headers, and the
-real Nitro deployment path.
+The workspace covers malformed and oversized receipts, invalid signatures,
+certificate validity and CA constraints, root-first AWS chain ordering, mixed
+root pinning attacks, timestamp checks, single-host multi-instance replay,
+one-time challenges, nonce generation and required-nonce policy, unknown
+critical headers, payload tampering, PCR0, key independence/exhaustion, and
+REPORTDATA binding. Real Nitro deployment remains an external test.

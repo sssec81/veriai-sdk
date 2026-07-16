@@ -47,14 +47,32 @@ export STATE_FILE_PATH=/var/lib/veriai/replay-state.json
 cargo run -p verifier-service --no-default-features --features real-hardware
 ```
 
+`STATE_FILE_PATH` uses an advisory lock and is safe for multiple verifier
+processes sharing one local filesystem. It is not a distributed replay store;
+use a transactional shared database before deploying multiple hosts.
+
 The verifier listens on port 8080 by default. The parent relay forwards the
 proxy request to the enclave on port 3000; place authentication and TLS in
 front of the parent relay before exposing it outside the host.
 
+In real-hardware mode, obtain a short-lived verifier challenge before calling
+the enclave proxy:
+
+```bash
+curl -s -X POST http://127.0.0.1:8080/v1/challenge
+```
+
+Send the returned `nonce` as `X-VeriAI-Nonce` to the proxy, then include the
+same nonce in `/v1/verify`. The verifier atomically reserves the issued
+challenge, restores it after invalid verification, and consumes it only after
+successful verification and durable replay-state persistence. A consumed or
+expired challenge is rejected.
+
 ## Security and reproducibility notes
 
-- A fresh 32-byte client nonce should be supplied in `X-VeriAI-Nonce` for every
-  request and retained by the verifier to prevent replay.
+- A fresh 32-byte client/verifier-issued nonce is required in real-hardware mode
+  for every request. `verifier-service` issues five-minute challenges and
+  consumes them once to provide a freshness guarantee.
 - The Docker base images and apt repositories are not digest-pinned in this
   reference. Pin them before treating PCR0 as a reproducible release artifact.
 - The `llama.cpp` revision is pinned. Review and update it deliberately.

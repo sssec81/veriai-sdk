@@ -191,15 +191,17 @@ impl Verifier {
                 if c.unprotected.alg.is_some() {
                     return Err(VerifyError::AlgorithmInUnprotectedHeader);
                 }
+                if !c.protected.header.crit.is_empty() || !c.unprotected.crit.is_empty() {
+                    return Err(VerifyError::InvalidProtectedHeader);
+                }
+                if !c.unprotected.is_empty() {
+                    return Err(VerifyError::InvalidProtectedHeader);
+                }
                 match (
                     c.protected.header.content_type.as_ref(),
                     c.unprotected.content_type.as_ref(),
                 ) {
                     (Some(ContentType::Text(value)), None) if value == "application/cwt" => {}
-                    // Earlier v1 receipts placed application/cwt in the
-                    // unprotected header. Keep those receipts readable while
-                    // requiring all newly generated receipts to protect it.
-                    (None, Some(ContentType::Text(value))) if value == "application/cwt" => {}
                     _ => return Err(VerifyError::InvalidContentType),
                 }
                 add_check!("Receipt Format", "passed", None);

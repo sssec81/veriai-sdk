@@ -14,6 +14,7 @@ pub struct ReceiptGenerator {
     // ed25519-dalek enables zeroization for SigningKey through its default `std` feature.
     signing_key: SigningKey,
     sequence_num: AtomicU64,
+    generation_lock: tokio::sync::Mutex<()>,
 }
 
 impl ReceiptGenerator {
@@ -25,6 +26,7 @@ impl ReceiptGenerator {
             provider,
             signing_key,
             sequence_num: AtomicU64::new(0),
+            generation_lock: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -34,6 +36,7 @@ impl ReceiptGenerator {
             provider,
             signing_key,
             sequence_num: AtomicU64::new(0),
+            generation_lock: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -61,7 +64,9 @@ impl ReceiptGenerator {
         output_hash: [u8; 32],
         client_nonce: [u8; 32],
     ) -> Result<Vec<u8>, VerifyError> {
-        let sequence_num = self.sequence_num.fetch_add(1, Ordering::SeqCst);
+        // Preserve completion-order monotonicity for callers sharing a
+        // generator. Atomic allocation alone cannot prevent task reordering.
+        let _generation_guard = self.generation_lock.lock().await;
         let pubkey_bytes = self.public_key_bytes();
         let report_data = self.compute_report_data();
 
@@ -71,6 +76,14 @@ impl ReceiptGenerator {
             .generate(Some(&report_data), Some(&client_nonce), Some(&pubkey_bytes))
             .await
             .map_err(|e| VerifyError::Attestation(e.to_string()))?;
+        // Do not consume a sequence value when attestation generation fails.
+        // Exhaustion is terminal rather than silently wrapping to zero.
+        let sequence_num = self
+            .sequence_num
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |value| {
+                value.checked_add(1)
+            })
+            .map_err(|_| VerifyError::SequenceNumberExhausted)?;
 
         let now_sec = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -114,5 +127,32 @@ impl ReceiptGenerator {
         cose_sign1
             .to_vec()
             .map_err(|_| VerifyError::MalformedReceipt)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ReceiptGenerator;
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
+    use veriai_attestation::mock::MockAttestationProvider;
+    use veriai_types::error::VerifyError;
+
+    #[test]
+    fn independent_generators_use_independent_keys() {
+        let provider = Arc::new(MockAttestationProvider::new());
+        let first = ReceiptGenerator::new(provider.clone());
+        let second = ReceiptGenerator::new(provider);
+        assert_ne!(first.public_key_bytes(), second.public_key_bytes());
+    }
+
+    #[tokio::test]
+    async fn sequence_exhaustion_fails_closed() {
+        let generator = ReceiptGenerator::new(Arc::new(MockAttestationProvider::new()));
+        generator.sequence_num.store(u64::MAX, Ordering::SeqCst);
+        let result = generator
+            .generate_receipt([1; 32], [2; 32], [3; 32], [4; 32])
+            .await;
+        assert_eq!(result, Err(VerifyError::SequenceNumberExhausted));
     }
 }

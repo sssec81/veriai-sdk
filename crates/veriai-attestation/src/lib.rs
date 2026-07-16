@@ -16,6 +16,55 @@ use veriai_types::error::AttestationError;
 use x509_cert::Certificate;
 use x509_cert::der::{Decode, Encode};
 
+/// SHA-256 fingerprints of AWS Nitro Enclaves roots approved by this release.
+/// Root rotation requires a reviewed source change.
+pub const AWS_NITRO_ROOT_FINGERPRINTS: [[u8; 32]; 1] = [[
+    0x64, 0x1a, 0x03, 0x21, 0xa3, 0xe2, 0x44, 0xef, 0xe4, 0x56, 0x46, 0x31, 0x95, 0xd6, 0x06, 0x31,
+    0x7e, 0xd7, 0xcd, 0xcc, 0x3c, 0x17, 0x56, 0xe0, 0x98, 0x93, 0xf3, 0xc6, 0x8f, 0x79, 0xbb, 0x5b,
+]];
+
+/// Validate that a PEM bundle is well formed and that every certificate is an
+/// explicitly approved AWS Nitro root. A single approved certificate must not
+/// smuggle additional trust anchors into the verifier.
+pub fn validate_aws_nitro_root_pem(pem: &str) -> Result<(), String> {
+    validate_root_pem_with_allowlist(pem, &AWS_NITRO_ROOT_FINGERPRINTS)
+}
+
+fn validate_root_pem_with_allowlist(pem: &str, allowlist: &[[u8; 32]]) -> Result<(), String> {
+    use base64ct::Encoding;
+    use sha2::{Digest, Sha256};
+    let mut encoded = String::new();
+    let mut in_cert = false;
+    let mut count = 0usize;
+    for line in pem.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        match line {
+            "-----BEGIN CERTIFICATE-----" if !in_cert => {
+                in_cert = true;
+                encoded.clear();
+            }
+            "-----END CERTIFICATE-----" if in_cert => {
+                let der = base64ct::Base64::decode_vec(&encoded)
+                    .map_err(|e| format!("invalid trusted root PEM: {e}"))?;
+                let fingerprint: [u8; 32] = Sha256::digest(&der).into();
+                if !allowlist.contains(&fingerprint) {
+                    return Err(format!(
+                        "trusted root fingerprint is not allowlisted: {}",
+                        hex::encode(fingerprint)
+                    ));
+                }
+                count += 1;
+                in_cert = false;
+            }
+            line if in_cert && !line.starts_with("-----") => encoded.push_str(line),
+            _ => return Err("malformed or unexpected data in trusted root PEM".to_string()),
+        }
+    }
+    if in_cert || count == 0 {
+        return Err("trusted root PEM contains no complete certificates".to_string());
+    }
+    Ok(())
+}
+
 #[async_trait]
 pub trait AttestationProvider: Send + Sync {
     /// Stable provider name included in verification results.
@@ -44,6 +93,7 @@ pub trait AttestationProvider: Send + Sync {
 fn validate_cert(
     cert: &Certificate,
     is_leaf: bool,
+    subordinate_ca_count: usize,
     now: SystemTime,
 ) -> Result<(), AttestationError> {
     let not_before = cert.tbs_certificate.validity.not_before.to_system_time();
@@ -55,25 +105,83 @@ fn validate_cert(
         ));
     }
 
-    if !is_leaf {
-        let mut is_ca = false;
-        const BASIC_CONSTRAINTS_OID: x509_cert::der::asn1::ObjectIdentifier =
-            x509_cert::der::asn1::ObjectIdentifier::new_unwrap("2.5.29.19");
-
-        if let Some(ref ext_list) = cert.tbs_certificate.extensions {
-            for ext in ext_list {
-                if ext.extn_id == BASIC_CONSTRAINTS_OID {
-                    let bc_res =
-                        x509_cert::ext::pkix::BasicConstraints::from_der(ext.extn_value.as_bytes());
-                    if let Ok(bc) = bc_res {
-                        is_ca = bc.ca;
-                    }
-                }
+    const BASIC_CONSTRAINTS_OID: x509_cert::der::asn1::ObjectIdentifier =
+        x509_cert::der::asn1::ObjectIdentifier::new_unwrap("2.5.29.19");
+    const KEY_USAGE_OID: x509_cert::der::asn1::ObjectIdentifier =
+        x509_cert::der::asn1::ObjectIdentifier::new_unwrap("2.5.29.15");
+    let mut basic_constraints = None;
+    let mut key_usage = None;
+    if let Some(ref extensions) = cert.tbs_certificate.extensions {
+        for extension in extensions {
+            if extension.extn_id == BASIC_CONSTRAINTS_OID {
+                basic_constraints = Some(
+                    x509_cert::ext::pkix::BasicConstraints::from_der(
+                        extension.extn_value.as_bytes(),
+                    )
+                    .map_err(|_| {
+                        AttestationError::ValidationError(
+                            "Invalid basicConstraints extension".to_string(),
+                        )
+                    })?,
+                );
+            } else if extension.extn_id == KEY_USAGE_OID {
+                key_usage = Some(
+                    x509_cert::ext::pkix::KeyUsage::from_der(extension.extn_value.as_bytes())
+                        .map_err(|_| {
+                            AttestationError::ValidationError(
+                                "Invalid keyUsage extension".to_string(),
+                            )
+                        })?,
+                );
+            } else if extension.critical {
+                return Err(AttestationError::ValidationError(
+                    "Certificate has an unsupported critical extension".to_string(),
+                ));
             }
         }
-        if !is_ca {
+    }
+
+    if is_leaf {
+        if basic_constraints
+            .as_ref()
+            .is_some_and(|constraints| constraints.ca)
+        {
+            return Err(AttestationError::ValidationError(
+                "Attestation leaf certificate must not be a CA".to_string(),
+            ));
+        }
+        if key_usage
+            .as_ref()
+            .is_some_and(|usage| !usage.digital_signature())
+        {
+            return Err(AttestationError::ValidationError(
+                "Attestation leaf keyUsage lacks digitalSignature".to_string(),
+            ));
+        }
+    } else {
+        let constraints = basic_constraints.ok_or_else(|| {
+            AttestationError::ValidationError(
+                "Non-leaf certificate lacks CA:true constraint".to_string(),
+            )
+        })?;
+        if !constraints.ca {
             return Err(AttestationError::ValidationError(
                 "Non-leaf certificate lacks CA:true constraint".to_string(),
+            ));
+        }
+        if key_usage
+            .as_ref()
+            .is_some_and(|usage| !usage.key_cert_sign())
+        {
+            return Err(AttestationError::ValidationError(
+                "CA certificate keyUsage lacks keyCertSign".to_string(),
+            ));
+        }
+        if let Some(limit) = constraints.path_len_constraint
+            && subordinate_ca_count > usize::from(limit)
+        {
+            return Err(AttestationError::ValidationError(
+                "CA certificate pathLenConstraint exceeded".to_string(),
             ));
         }
     }
@@ -105,6 +213,13 @@ pub fn verify_attestation_doc(
             "Attestation COSE algorithm must not be in the unprotected header".to_string(),
         ));
     }
+    if !attestation_cose.protected.header.crit.is_empty()
+        || !attestation_cose.unprotected.is_empty()
+    {
+        return Err(AttestationError::InvalidAttestationDocument(
+            "Attestation COSE has unsupported critical or unprotected headers".to_string(),
+        ));
+    }
 
     let attestation_payload = attestation_cose.payload.as_ref().ok_or_else(|| {
         AttestationError::InvalidAttestationDocument("Missing payload".to_string())
@@ -122,7 +237,7 @@ pub fn verify_attestation_doc(
     })?;
 
     // Validate leaf cert validity
-    validate_cert(&leaf_cert, true, now)?;
+    validate_cert(&leaf_cert, true, 0, now)?;
 
     let raw_leaf_pubkey = leaf_cert
         .tbs_certificate
@@ -152,17 +267,20 @@ pub fn verify_attestation_doc(
     let mut current_cert = leaf_cert;
     let mut verified = false;
 
-    // According to AWS Nitro Enclaves Attestation Document specification:
-    // "The certificate chain contains intermediate and root certificates ordered from issuer
-    // of the document's certificate to the root certificate." (leaf-to-root ordering:
-    // leaf is signed by cabundle[0], cabundle[i] is signed by cabundle[i+1]).
-    for cert_der in &doc.cabundle {
+    // AWS documents cabundle in root-first order.  Path validation starts at
+    // the leaf, so walk the bundle in reverse: INTERM_N .. INTERM_1, ROOT.
+    for (subordinate_ca_count, cert_der) in doc.cabundle.iter().rev().enumerate() {
         let parent_cert = Certificate::from_der(cert_der).map_err(|e| {
             AttestationError::InvalidAttestationDocument(format!("Invalid parent cert: {}", e))
         })?;
 
         // Validate parent cert (intermediate CA)
-        validate_cert(&parent_cert, false, now)?;
+        validate_cert(&parent_cert, false, subordinate_ca_count, now)?;
+        if current_cert.tbs_certificate.issuer != parent_cert.tbs_certificate.subject {
+            return Err(AttestationError::ValidationError(
+                "Certificate issuer does not match parent subject".to_string(),
+            ));
+        }
 
         let parent_pubkey_raw = parent_cert
             .tbs_certificate
@@ -223,4 +341,28 @@ pub fn verify_attestation_doc(
     }
 
     Ok(doc)
+}
+
+#[cfg(test)]
+mod root_pin_tests {
+    use super::validate_root_pem_with_allowlist;
+    use base64ct::Encoding;
+    use sha2::{Digest, Sha256};
+
+    const ROOT: &str = include_str!("../../../tests/fixtures/mock-aws-root.pem");
+    const INTERMEDIATE: &str = include_str!("../../../tests/fixtures/mock-aws-intermediate.pem");
+
+    fn fingerprint(pem: &str) -> [u8; 32] {
+        let body: String = pem
+            .lines()
+            .filter(|line| !line.starts_with("-----"))
+            .collect();
+        Sha256::digest(base64ct::Base64::decode_vec(&body).unwrap()).into()
+    }
+
+    #[test]
+    fn mixed_root_bundle_cannot_smuggle_an_unapproved_root() {
+        let bundle = format!("{ROOT}\n{INTERMEDIATE}");
+        assert!(validate_root_pem_with_allowlist(&bundle, &[fingerprint(ROOT)]).is_err());
+    }
 }
