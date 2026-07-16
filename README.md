@@ -234,9 +234,12 @@ The verifier service reads trust configuration at startup rather than accepting 
 from clients. Set `TRUSTED_ROOT_CERT_PATH` (or `TRUSTED_ROOT_CERT_PEM`) and
 `EXPECTED_PCR0` (96 hex characters). Set `STATEFUL_VERIFICATION=true` to keep
 sequence state for the lifetime of the service process.
+The service binds to `127.0.0.1` by default; `BIND_ADDR` can override this when
+an authenticated, TLS-terminating proxy or trusted network boundary is present.
 Set `STATE_FILE_PATH` to persist sequence state across normal service restarts.
-The file backend is intended for one verifier process; use a transactional
-shared store before running multiple verifier instances.
+The file backend coordinates multiple verifier processes on one host through a
+stable advisory lock. Use a transactional shared store before running verifier
+instances across multiple hosts.
 
 ## WASM verifier
 
@@ -250,8 +253,9 @@ rustup target add wasm32-unknown-unknown
 cargo build -p veriai-wasm --target wasm32-unknown-unknown --release
 ```
 
-CI limits the full-chain WASM artifact to 350 KB gzipped. The stricter 200 KB
-planning target remains open.
+CI limits the full-chain WASM artifact to 350 KB gzipped. The complete verifier
+is approximately 306 KB gzipped with the CI compression command after
+target-wide size optimization; the stricter 200 KB planning target remains open.
 
 ---
 
@@ -260,8 +264,12 @@ planning target remains open.
 [security_review.md](security_review.md) lists known risks and current follow-up work. It covers:
 - CBOR/COSE resource exhaustion protection.
 - Algorithm agility & header downgrade prevention (EdDSA alg validation).
-- Input concatenation ambiguity is a documented follow-up.
+- Fixed-width, domain-separated REPORTDATA key binding and canonical inference
+  request hashing.
 - Signing-key zeroization and remaining deployment memory-hardening work.
+
+Time-bounded supply-chain exceptions are recorded in
+[docs/dependency-exceptions.md](docs/dependency-exceptions.md).
 
 ---
 

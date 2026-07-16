@@ -54,6 +54,9 @@ use a transactional shared database before deploying multiple hosts.
 The verifier listens on port 8080 by default. The parent relay forwards the
 proxy request to the enclave on port 3000; place authentication and TLS in
 front of the parent relay before exposing it outside the host.
+`verifier-service` binds to `127.0.0.1` by default. Set `BIND_ADDR` only when a
+trusted network boundary requires another address; public exposure still
+requires authentication, TLS, request throttling, and monitoring upstream.
 
 In real-hardware mode, obtain a short-lived verifier challenge before calling
 the enclave proxy:
@@ -73,8 +76,8 @@ expired challenge is rejected.
 - A fresh 32-byte client/verifier-issued nonce is required in real-hardware mode
   for every request. `verifier-service` issues five-minute challenges and
   consumes them once to provide a freshness guarantee.
-- The Docker base images and apt repositories are not digest-pinned in this
-  reference. Pin them before treating PCR0 as a reproducible release artifact.
-- The `llama.cpp` revision is pinned. Review and update it deliberately.
+- Docker base images are pinned by digest, Debian packages come from a dated
+  snapshot, and the `llama.cpp` revision is pinned. Updating any of these inputs
+  requires an explicit reviewed change and produces a new PCR0.
 - The model file is intentionally ignored by Git.
 - Successful local or mock verification is not evidence of Nitro hardware.

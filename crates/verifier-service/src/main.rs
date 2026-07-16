@@ -7,7 +7,7 @@ use fs2::FileExt;
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -70,13 +70,23 @@ struct ChallengeReservation {
 
 impl ChallengeReservation {
     fn restore(self) -> Result<(), String> {
-        std::fs::rename(self.reserved_path, self.available_path)
-            .map_err(|e| format!("failed to restore challenge: {e}"))
+        let directory = self
+            .available_path
+            .parent()
+            .ok_or_else(|| "challenge path has no parent directory".to_string())?;
+        std::fs::rename(&self.reserved_path, &self.available_path)
+            .map_err(|e| format!("failed to restore challenge: {e}"))?;
+        sync_directory(directory)
     }
 
     fn consume(self) -> Result<(), String> {
-        std::fs::remove_file(self.reserved_path)
-            .map_err(|e| format!("failed to consume challenge: {e}"))
+        let directory = self
+            .reserved_path
+            .parent()
+            .ok_or_else(|| "challenge path has no parent directory".to_string())?;
+        std::fs::remove_file(&self.reserved_path)
+            .map_err(|e| format!("failed to consume challenge: {e}"))?;
+        sync_directory(directory)
     }
 }
 
@@ -137,7 +147,11 @@ async fn main() {
         .parse::<u16>()
         .expect("Invalid PORT");
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    let bind_ip = std::env::var("BIND_ADDR")
+        .unwrap_or_else(|_| "127.0.0.1".to_string())
+        .parse::<IpAddr>()
+        .expect("Invalid BIND_ADDR");
+    let addr = SocketAddr::from((bind_ip, port));
     tracing::info!("VeriAI Verifier Service running on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
@@ -195,6 +209,7 @@ async fn challenge_handler(
                     .map_err(replay_state_http_error)?;
                 writeln!(file, "{expires_at}").map_err(replay_state_http_error)?;
                 file.sync_all().map_err(replay_state_http_error)?;
+                sync_directory(&directory).map_err(replay_state_http_error)?;
                 return Ok(Json(ChallengeResponse {
                     nonce: hex::encode(nonce),
                     expires_at,
@@ -458,10 +473,23 @@ fn reserve_challenge(state_path: &Path, nonce: [u8; 32]) -> Result<ChallengeRese
     ));
     std::fs::rename(&available_path, &reserved_path)
         .map_err(|_| "challenge was concurrently consumed".to_string())?;
+    sync_directory(&directory)?;
     Ok(ChallengeReservation {
         available_path,
         reserved_path,
     })
+}
+
+fn sync_directory(directory: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        std::fs::File::open(directory)
+            .and_then(|file| file.sync_all())
+            .map_err(|e| format!("failed to sync challenge directory: {e}"))?;
+    }
+    #[cfg(not(unix))]
+    let _ = directory;
+    Ok(())
 }
 
 fn api_replay_error(message: impl Into<String>) -> (axum::http::StatusCode, Json<ErrorResponse>) {

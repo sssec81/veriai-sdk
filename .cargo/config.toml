@@ -1,0 +1,4 @@
+# Apply size optimization to the complete WASM dependency graph. The workspace
+# release profile keeps native inference binaries optimized for runtime speed.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "opt-level=s"]

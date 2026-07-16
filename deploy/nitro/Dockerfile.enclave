@@ -1,7 +1,13 @@
-FROM debian:bookworm-slim AS llama-builder
+FROM debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818 AS llama-builder
 
 ARG LLAMA_CPP_REF=a935fbffe
-RUN apt-get update && apt-get install -y --no-install-recommends \
+ARG DEBIAN_SNAPSHOT=20260713T000000Z
+RUN sed -i \
+        -e "s|http://deb.debian.org/debian-security|https://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}|g" \
+        -e "s|http://deb.debian.org/debian|https://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}|g" \
+        /etc/apt/sources.list.d/debian.sources \
+    && apt-get -o Acquire::Check-Valid-Until=false update \
+    && apt-get install -y --no-install-recommends \
     build-essential ca-certificates cmake git \
     && rm -rf /var/lib/apt/lists/*
 RUN git clone https://github.com/ggml-org/llama.cpp.git /src/llama.cpp \
@@ -15,7 +21,7 @@ RUN git clone https://github.com/ggml-org/llama.cpp.git /src/llama.cpp \
         -DLLAMA_CURL=OFF \
     && cmake --build build --config Release --target llama-cli -j2
 
-FROM rust:1.88-bookworm AS rust-builder
+FROM rust:1.88-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0 AS rust-builder
 WORKDIR /src/veriai
 COPY Cargo.toml Cargo.lock ./
 COPY crates crates
@@ -24,8 +30,14 @@ COPY tests tests
 RUN cargo build --locked --release -p chat-demo \
     --no-default-features --features real-hardware
 
-FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends \
+FROM debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818
+ARG DEBIAN_SNAPSHOT=20260713T000000Z
+RUN sed -i \
+        -e "s|http://deb.debian.org/debian-security|https://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}|g" \
+        -e "s|http://deb.debian.org/debian|https://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}|g" \
+        /etc/apt/sources.list.d/debian.sources \
+    && apt-get -o Acquire::Check-Valid-Until=false update \
+    && apt-get install -y --no-install-recommends \
     ca-certificates libgomp1 socat \
     && rm -rf /var/lib/apt/lists/*
 

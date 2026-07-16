@@ -21,8 +21,8 @@ This is a working list of security risks and mitigations in the repository. It i
 | **SEC-10** | Release Build Mock Mode Drift | High | Shipping mock hardware backend to production | **Implemented in code** (compile-time check outside tests) |
 | **SEC-11** | Missing Attestation Freshness Check | Critical | Replaying old valid attestation documents | **Implemented in code** (timestamp window plus verifier-issued, expiring, one-time challenges in real-hardware service mode) |
 | **SEC-12** | Nonce Entropy Validation | High | Low-entropy or predictable nonces enabling replay | **Implemented for supplied flows** (demo and verifier challenge issuance use `OsRng`; real-hardware proxy requires a caller/verifier-issued nonce) |
-| **SEC-13** | Memory Leakage & Exposure | Medium | Key leak through core dumps, debugging, or swap | **Follow-up** (use `mlock` and disable core dumps) |
-| **SEC-14** | Dependency Supply Chain | Medium | Upstream library security vulnerabilities | **Implemented in CI configuration** (pinned `cargo audit`, `cargo deny`, and `cargo vet`; `serde_cbor` remains an explicitly visible unmaintained transitive dependency warning) |
+| **SEC-13** | Memory Leakage & Exposure | Medium | Key leak through core dumps, debugging, or swap | **Partially implemented** (the enclave entrypoint disables core dumps; locked memory remains deployment work) |
+| **SEC-14** | Dependency Supply Chain | Medium | Upstream library security vulnerabilities | **Partially implemented** (pinned `cargo audit`, `cargo deny`, and `cargo vet`; the time-bounded `serde_cbor` exception and Cargo Vet bootstrap baseline are documented) |
 | **SEC-15** | Merkle Tree Odd-Node Duplication | Medium | Hash collision vulnerabilities during inclusion proofs | **Documented** (the current hash is not an inclusion proof) |
 | **SEC-16** | Model Replacement After Startup | Medium | A local model file can be swapped after the startup hash | **Partially implemented** (metadata-only cache removed; Nitro PCR0 must protect the model and proxy image) |
 | **SEC-17** | Weak Trusted Roots Verification Path | Low | Defense-in-depth bypass if mixed roots list provided | **Documented** (callers must populate trusted roots correctly) |
@@ -63,14 +63,16 @@ and a fixed 32-byte Ed25519 key. Preserve it for receipt-format compatibility.
 ### 2.5 Private Key Lifecycle (SEC-03, SEC-13)
 - **Problem**: Ephemeral signing keys could leak via core dumps, memory pages, or cloning.
 - **Current state**: `ed25519-dalek` zeroizes the receipt signing key when it is
-  dropped. Locked memory and core-dump policy remain deployment work. AWS Nitro
-  Enclave isolation helps, but does not replace memory hygiene.
+  dropped. The enclave entrypoint disables core dumps with `ulimit -c 0` before
+  starting the service. Locked memory remains deployment work; AWS Nitro Enclave
+  isolation helps, but does not replace memory hygiene.
 
 ### 2.6 Algorithm Agility & Downgrade Prevention (SEC-06)
 - **Problem**: Downgrade attacks or ignoring critical headers could bypass verification constraints.
-- **Current state**: The verifier validates the protected `alg`, rejects
-  unprotected `alg` declarations, and checks the content type. Unknown critical
-  (`crit`) header handling remains follow-up work.
+- **Current state**: The verifier requires protected `alg` and content type,
+  rejects conflicting or unsupported unprotected headers, and rejects every
+  unsupported critical (`crit`) label. AWS attestation documents must also have
+  empty unprotected headers.
 
 ### 2.7 Merkle Tree Duplicate Node Protection (SEC-15)
 - **Problem**: The current Merkle Tree implementation duplicates odd nodes (`hashing.rs`), replicating the Bitcoin CVE-2012-2459 vulnerability. If inclusion proofs are introduced later, this creates collision vectors.
@@ -100,6 +102,11 @@ A static analysis scan was run across the workspace crates to identify potential
 
 **Panic safety statement**: No panic path was found in normal untrusted receipt parsing. The mock provider still uses an `expect` for repository-owned certificate fixtures; it is not used by the real-hardware backend.
 
+Dependency exceptions and their review deadlines are maintained in
+[`docs/dependency-exceptions.md`](docs/dependency-exceptions.md). Cargo Vet
+exemptions are treated as a bootstrap trust baseline rather than completed
+first-party audits.
+
 ---
 
 ## 4. Security regression tests
@@ -110,3 +117,26 @@ root pinning attacks, timestamp checks, single-host multi-instance replay,
 one-time challenges, nonce generation and required-nonce policy, unknown
 critical headers, payload tampering, PCR0, key independence/exhaustion, and
 REPORTDATA binding. Real Nitro deployment remains an external test.
+
+---
+
+## 5. Local verification record
+
+On 2026-07-16, the following completed successfully:
+
+- `cargo fmt --all -- --check`
+- `cargo clippy --workspace --all-targets -- -D warnings`
+- `cargo test --workspace --all-targets`
+- `cargo build --release --no-default-features --features real-hardware`
+- `cargo deny check`
+- `cargo vet --locked` (176 bootstrap exemptions)
+- WASM release compilation; 1,100,904 bytes raw and 305,995 bytes with the
+  compression command used by CI
+
+`cargo audit` found no known vulnerabilities and reported the allowed,
+time-bounded `serde_cbor` unmaintained warning described in
+[`docs/dependency-exceptions.md`](docs/dependency-exceptions.md).
+
+The real-hardware build result proves compilation only. No claim of production
+completion or successful Nitro attestation is made without an AWS Nitro
+Enclaves deployment test.

@@ -85,13 +85,13 @@ All decisions are verified against the official AWS Nitro Enclaves Attestation D
 | 6 | **Attestation doc timestamp** | `uint .size 8` (milliseconds since UNIX epoch). Verifier checks both claim 6007 (seconds) and doc timestamp (ms) within ±5 min. |
 | 7 | **Security boundary** | SDK is a library by default. **Full I/O-fabrication protection requires proxy deployment** inside the enclave, and the proxy binary **must** be part of PCR0. Library mode alone does not prevent a dishonest operator from fabricating inputs/outputs — see Section 1.2. |
 | 8 | **Model hash caching** | No metadata-only cache is used. The chat demo computes the model hash during runtime initialization; Nitro PCR0 must protect the model and image after startup. |
-| 9 | **WASM size** | Current full-chain build is 308 KB gzipped and CI enforces a 350 KB ceiling. The original 200 KB target remains open; reducing dependencies or using a pinned-leaf mode are possible follow-ups. |
+| 9 | **WASM size** | Current full-chain build is approximately 306 KB gzipped with the CI compression command, and CI enforces a 350 KB ceiling. The original 200 KB target remains open; verification checks will not be removed to reach it. |
 | 10 | **Build‑time guard** | `mock‑hardware` and `real‑hardware` mutually exclusive. `compile_error!` on release with mock (except `test‑mode`). |
 | 11 | **Mock signing** | Mock docs signed by test private key; verifier accepts override only in test builds. |
-| 12 | **COSE_Sign1 headers** | `alg`: `EdDSA` (-8). `kid`: omitted. `content‑type`: `application/cwt` (SHOULD be present). |
+| 12 | **COSE_Sign1 headers** | Protected `alg`: `EdDSA` (-8) and protected `content-type`: `application/cwt` are required. Unsupported critical or conflicting unprotected headers are rejected. |
 | 13 | **Receipt wire format** | Raw COSE_Sign1 bytes. Transport encoding is caller's responsibility. |
 | 14 | **WASM replay protection gap** | The WASM verifier is stateless and does not track sequence numbers or identity fingerprints (per #5). It therefore cannot detect enclave reboot/replay across calls. This must be documented as an explicit limitation everywhere the WASM verifier is offered — not just implied by "stateless." Browser/DePIN integrators relying on WASM-only verification get weaker guarantees than Rust-SDK integrators. |
-| 15 | **WASM budget contingency** | The current full-chain build is above the 200 KB target. Decide later whether to reduce dependencies or offer an explicitly weaker pinned-leaf mode. |
+| 15 | **WASM budget contingency** | The current full-chain build is above the 200 KB target. Continue dependency and toolchain optimization without offering a weaker verification mode. |
 
 ---
 
@@ -106,7 +106,7 @@ All decisions are verified against the official AWS Nitro Enclaves Attestation D
 - COSE_Sign1 / CWT receipt generation (claims 6000–6007, 6011, 6012)
 - PCR0 validation (48‑byte SHA‑384)
 - Rust verification SDK (stateful: sequence + identity fingerprint tracking)
-- WASM verification module (stateless, currently 308 KB gzipped; 200 KB remains a planning target)
+- WASM verification module (stateless, currently approximately 306 KB gzipped; 200 KB remains a planning target)
 - CLI tool and Docker/Nitro reference deployment
 - Build‑time safety guard
 - Open‑source (Apache 2.0)
@@ -122,7 +122,6 @@ All decisions are verified against the official AWS Nitro Enclaves Attestation D
 - Claims 6008–6010 (reserved; claims 6011 and 6012 are used)
 - Sequence/reboot checks in WASM verifier (documented limitation, not deferred silently)
 - Multi‑file model formats (only single‑file Safetensors or raw binary)
-- Full X.509 chain validation in WASM if budget contingency (#15) is triggered
 
 ---
 
@@ -348,8 +347,8 @@ const result = verify_receipt(
 | **Attestation doc timestamp not checked** | ✅ Validate doc timestamp (ms) and claim 6007 (seconds). |
 | **I/O fabrication by operator** | ⚠️ Only addressed by the measured proxy deployment; library mode does not close this gap. |
 | **Model replacement after startup** | ⚠️ Local processes must protect the configured model file. Nitro deployment relies on PCR0 covering the model and proxy image; the chat demo does not rehash the file for every request. |
-| **WASM size >200KB** | ⚠️ Current build is 308 KB gzipped under a 350 KB CI ceiling; the original 200 KB target remains open. |
-| **X.509 cert chain in WASM** | Budget 2 weeks; use well‑audited crates; check dependencies early; contingency plan defined above if budget is missed. |
+| **WASM size >200KB** | ⚠️ Current build is approximately 306 KB gzipped under a 350 KB CI ceiling; the original 200 KB target remains open. |
+| **X.509 cert chain in WASM** | ✅ Full validation is retained; optimize its dependency graph without weakening the trust path. |
 | **WASM has no replay/reboot detection** | ⚠️ New: documented as a stated limitation (Decision #14), not silently deferred. Integrators choosing WASM-only verification should know they're accepting weaker guarantees. |
 | **Market-validation citation was factually wrong (v10.2)** | ✅ Corrected in Section 1.4 / 2 — replaced with the actual relevant competitor (Eigen Labs' EigenCloud/EigenAI) instead of an unrelated acquisition. |
 
