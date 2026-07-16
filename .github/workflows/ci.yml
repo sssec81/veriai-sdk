@@ -42,9 +42,17 @@ jobs:
 
       - name: Install dependency-security tools
         run: |
-          cargo install cargo-audit@0.22.2 --locked
-          cargo install cargo-deny@0.20.2 --locked
-          cargo install cargo-vet@0.10.2 --locked
+          install_tool() {
+            binary="$1"
+            package="$2"
+            version="$3"
+            if ! command -v "$binary" >/dev/null || ! "$binary" --version | grep -Fq "$version"; then
+              cargo install "$package@$version" --locked --force
+            fi
+          }
+          install_tool cargo-audit cargo-audit 0.22.2
+          install_tool cargo-deny cargo-deny 0.20.2
+          install_tool cargo-vet cargo-vet 0.10.2
 
       - name: Audit known dependency vulnerabilities
         run: cargo audit
